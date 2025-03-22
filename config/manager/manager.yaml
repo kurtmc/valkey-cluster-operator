@@ -91,5 +91,8 @@ spec:
           requests:
             cpu: 10m
             memory: 64Mi
+        env:
+          - name: MEMCACHED_IMAGE
+            value: "memcached:1.6-alpine3.21"
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10
