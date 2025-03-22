@@ -19,6 +19,8 @@ package e2e
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -31,45 +33,35 @@ const namespace = "valkey-cluster-operator-system"
 
 var _ = Describe("controller", Ordered, func() {
 	BeforeAll(func() {
-		By("installing prometheus operator")
-		Expect(utils.InstallPrometheusOperator()).To(Succeed())
-
-		By("installing the cert-manager")
-		Expect(utils.InstallCertManager()).To(Succeed())
-
 		By("creating manager namespace")
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
 		_, _ = utils.Run(cmd)
 	})
 
 	AfterAll(func() {
-		By("uninstalling the Prometheus manager bundle")
-		utils.UninstallPrometheusOperator()
-
-		By("uninstalling the cert-manager bundle")
-		utils.UninstallCertManager()
-
-		By("removing manager namespace")
-		cmd := exec.Command("kubectl", "delete", "ns", namespace)
-		_, _ = utils.Run(cmd)
+		// By("removing manager namespace")
+		// cmd := exec.Command("kubectl", "delete", "ns", namespace)
+		// _, _ = utils.Run(cmd)
 	})
 
 	Context("Operator", func() {
 		It("should run successfully", func() {
 			var controllerPodName string
 			var err error
+			projectDir, _ := utils.GetProjectDir()
 
 			// projectimage stores the name of the image used in the example
-			var projectimage = "example.com/valkey-cluster-operator:v0.0.1"
+			var projectimage = "quay.io/kurtmcalpine/valkey-cluster-operator:test"
 
 			By("building the manager(Operator) image")
-			cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectimage))
-			_, err = utils.Run(cmd)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			// TODO: maybe push the image?
+			cmd := exec.Command("make", "docker-buildx", fmt.Sprintf("IMG=%s", projectimage), "PLATFORMS=linux/arm64")
+			_, _ = utils.Run(cmd)
+			// ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 			By("loading the the manager(Operator) image on Kind")
-			err = utils.LoadImageToKindClusterWithName(projectimage)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			// err = utils.LoadImageToKindClusterWithName(projectimage)
+			// ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 			By("installing CRDs")
 			cmd = exec.Command("make", "install")
@@ -116,6 +108,46 @@ var _ = Describe("controller", Ordered, func() {
 				return nil
 			}
 			EventuallyWithOffset(1, verifyControllerUp, time.Minute, time.Second).Should(Succeed())
+
+			By("creating an instance of the Memcached Operand(CR)")
+			EventuallyWithOffset(1, func() error {
+				cmd = exec.Command("kubectl", "apply", "-f", filepath.Join(projectDir,
+					"config/samples/cache_v1alpha1_memcached.yaml"), "-n", namespace)
+				_, err = utils.Run(cmd)
+				return err
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("validating that pod(s) status.phase=Running")
+			getMemcachedPodStatus := func() error {
+				cmd = exec.Command("kubectl", "get",
+					"pods", "-l", "app.kubernetes.io/name=memcached-operator",
+					"-o", "jsonpath={.items[*].status}", "-n", namespace,
+				)
+				status, err := utils.Run(cmd)
+				fmt.Println(string(status))
+				ExpectWithOffset(2, err).NotTo(HaveOccurred())
+				if !strings.Contains(string(status), "\"phase\":\"Running\"") {
+					return fmt.Errorf("memcached pod in %s status", status)
+				}
+				return nil
+			}
+			EventuallyWithOffset(1, getMemcachedPodStatus, time.Minute, time.Second).Should(Succeed())
+
+			By("validating that the status of the custom resource created is updated or not")
+			getStatus := func() error {
+				cmd = exec.Command("kubectl", "get", "memcached",
+					"memcached-sample", "-o", "jsonpath={.status.conditions}",
+					"-n", namespace,
+				)
+				status, err := utils.Run(cmd)
+				fmt.Println(string(status))
+				ExpectWithOffset(2, err).NotTo(HaveOccurred())
+				if !strings.Contains(string(status), "Available") {
+					return fmt.Errorf("status condition with type Available should be set")
+				}
+				return nil
+			}
+			Eventually(getStatus, time.Minute, time.Second).Should(Succeed())
 
 		})
 	})
