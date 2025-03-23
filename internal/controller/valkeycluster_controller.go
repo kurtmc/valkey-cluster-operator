@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/valkey-io/valkey-go"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -31,6 +32,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -267,6 +269,55 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	// Check the status of the valkey cluster
+	clusterNodes := []ClusterNode{}
+
+	// get all the pods in the statefulset
+	podList := &corev1.PodList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(valkeyCluster.Namespace),
+		client.MatchingLabels(labelsForValkeyCluster(valkeyCluster.Name)),
+	}
+	if err = r.List(ctx, podList, listOpts...); err != nil {
+		log.Error(err, "Failed to list pods", "ValkeyCluster.Namespace", valkeyCluster.Namespace, "ValkeyCluster.Name", valkeyCluster.Name)
+		return ctrl.Result{}, err
+	}
+	for _, pod := range podList.Items {
+		if pod.Status.Phase != corev1.PodRunning {
+			log.Info("Pod not running", "Pod.Name", pod.Name, "Pod.Status", pod.Status.Phase)
+			return ctrl.Result{RequeueAfter: time.Minute}, nil
+		}
+
+		log.Info("Pod running", "Pod.Name", pod.Name, "Pod.Status", pod.Status.Phase)
+
+		isPodReady := false
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+				isPodReady = true
+			}
+		}
+		if isPodReady {
+			client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{pod.Status.PodIP + ":6379"}, ForceSingleClient: true})
+			if err != nil {
+				log.Error(err, "Failed to create Valkey client")
+				return ctrl.Result{}, err
+			}
+			defer client.Close()
+			clusterNodesTxt, err := client.Do(ctx, client.B().ClusterNodes().Build()).ToString()
+			if err != nil {
+				log.Error(err, "Failed to get cluster nodes")
+				return ctrl.Result{}, err
+			}
+
+			clusterNodes = append(clusterNodes, parseClusterNode(clusterNodesTxt))
+		} else {
+			log.Info("Pod not ready", "Pod.Name", pod.Name)
+			return ctrl.Result{RequeueAfter: time.Minute}, nil
+		}
+	}
+
+	log.Info("Cluster nodes", "ClusterNodes", clusterNodes)
+
 	// The following implementation will update the status
 	meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
 		Status: metav1.ConditionTrue, Reason: "Reconciling",
@@ -384,8 +435,32 @@ func (r *ValkeyClusterReconciler) statefulsetForValkeyCluster(valkeyCluster *cac
 								Name:          "valkey-bus",
 							},
 						},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								TCPSocket: &corev1.TCPSocketAction{
+									Port: intstr.FromInt(6379),
+								},
+							},
+						},
+						LivenessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								TCPSocket: &corev1.TCPSocketAction{
+									Port: intstr.FromInt(6379),
+								},
+							},
+						},
+						Env: []corev1.EnvVar{
+							{
+								Name: "POD_IP",
+								ValueFrom: &corev1.EnvVarSource{
+									FieldRef: &corev1.ObjectFieldSelector{
+										FieldPath: "status.podIP",
+									},
+								},
+							},
+						},
 						WorkingDir: "/data",
-						Command:    []string{"sh", "-c", `echo -e "port 6379\ncluster-enabled yes\ncluster-config-file nodes.conf\ncluster-node-timeout 5000\nappendonly yes" > valkey.conf; valkey-server ./valkey.conf`},
+						Command:    []string{"sh", "-c", `echo -e "port 6379\ncluster-enabled yes\ncluster-config-file nodes.conf\ncluster-node-timeout 5000\nappendonly yes\nprotected-mode no" > valkey.conf; valkey-server ./valkey.conf --cluster-announce-ip $POD_IP`},
 						VolumeMounts: []corev1.VolumeMount{
 							{
 								Name:      "valkey-data",
@@ -446,4 +521,46 @@ func imageForValkeyCluster() (string, error) {
 		return "ghcr.io/hyperspike/valkey:8.0.2", nil
 	}
 	return image, nil
+}
+
+type ClusterNode struct {
+	IP           string
+	ID           string
+	MasterNodeID string
+	Flags        []string
+	SlotRange    string
+}
+
+func parseClusterNode(clusterNodesTxt string) ClusterNode {
+	for _, line := range strings.Split(clusterNodesTxt, "\n") {
+		if strings.Contains(line, "myself") {
+			strings.Fields(line)
+			fields := strings.Fields(line)
+			flagsWithoutMyself := []string{}
+			flags := strings.Split(fields[2], ",")
+			for _, flag := range flags {
+				if flag != "myself" {
+					flagsWithoutMyself = append(flagsWithoutMyself, flag)
+				}
+			}
+			slotRange := ""
+			if len(fields) > 8 {
+				slotRange = fields[8]
+			}
+			IP := strings.Split(fields[1], ":")[0]
+			ID := strings.ReplaceAll(fields[0], "txt:", "")
+			MasterNodeID := fields[3]
+			if MasterNodeID == "-" {
+				MasterNodeID = ""
+			}
+			return ClusterNode{
+				IP:           IP,
+				ID:           ID,
+				MasterNodeID: MasterNodeID,
+				Flags:        flagsWithoutMyself,
+				SlotRange:    slotRange,
+			}
+		}
+	}
+	return ClusterNode{}
 }
