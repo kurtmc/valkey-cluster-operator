@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: quay.io/kurtmcalpine/valkey-cluster-operator
-  newTag: test
+  newTag: v0.0.8

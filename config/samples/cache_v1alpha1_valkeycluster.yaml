@@ -1,0 +1,10 @@
+apiVersion: cache.example.com/v1alpha1
+kind: ValkeyCluster
+metadata:
+  labels:
+    app.kubernetes.io/name: valkey-cluster-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: valkeycluster-sample
+spec:
+  shards: 2
+  replicas: 1

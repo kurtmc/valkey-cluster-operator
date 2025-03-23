@@ -8,6 +8,7 @@ rules:
   - apps
   resources:
   - deployments
+  - statefulsets
   verbs:
   - create
   - delete
@@ -20,6 +21,7 @@ rules:
   - cache.example.com
   resources:
   - memcacheds
+  - valkeyclusters
   verbs:
   - create
   - delete
@@ -32,12 +34,14 @@ rules:
   - cache.example.com
   resources:
   - memcacheds/finalizers
+  - valkeyclusters/finalizers
   verbs:
   - update
 - apiGroups:
   - cache.example.com
   resources:
   - memcacheds/status
+  - valkeyclusters/status
   verbs:
   - get
   - patch
