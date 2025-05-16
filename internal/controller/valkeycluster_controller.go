@@ -59,6 +59,8 @@ const (
 	typeDegradedValkeyCluster = "Degraded"
 	// typeReshardingValkeyCluster represents the status used when the custom resource is in the process of resharding.
 	typeReshardingValkeyCluster = "Resharding"
+	// typeAvailableValkeyCluster represents the status of the Statefulset reconciliation
+	typeProvisioningValkeyCluster = "Provisioning"
 )
 
 // ValkeyClusterReconciler reconciles a ValkeyCluster object
@@ -235,6 +237,8 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 					"StatefulSet.Namespace", sts.Namespace, "StatefulSet.Name", sts.Name)
 				return ctrl.Result{}, err
 			}
+			r.Recorder.Event(valkeyCluster, "Normal", "Created",
+				fmt.Sprintf("StatefulSet %s/%s is created", valkeyCluster.Namespace, sts.Name))
 
 			// StatefulSet created successfully
 			// We will requeue the reconciliation so that we can ensure the state
@@ -333,12 +337,18 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 
+	// there should be the correct number of cluster nodes now
+	if len(clusterNodes) != int(statefulSetSizeForValkeyCluster(valkeyCluster)) {
+		err := fmt.Errorf("Number of clusterNodes (%d) != number of expected pods (%d)", len(clusterNodes), int(statefulSetSizeForValkeyCluster(valkeyCluster)))
+		return ctrl.Result{}, err
+	}
+
 	log.Info("Cluster nodes", "ClusterNodes", clusterNodes)
 	updateClusterNodes(valkeyCluster, clusterNodes)
 
 	// The following implementation will update the status
 	meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
-		Status: metav1.ConditionTrue, Reason: "Reconciling",
+		Status: metav1.ConditionFalse, Reason: "Reconciling",
 		Message: fmt.Sprintf("StatefulSet for custom resource (%s) with %d replicas created successfully", valkeyCluster.Name, len(podList.Items))})
 
 	if err := r.Status().Update(ctx, valkeyCluster); err != nil {
@@ -346,7 +356,113 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
+	for _, clusterNodeA := range clusterNodes {
+		for _, clusterNodeB := range clusterNodes {
+			if clusterNodeA.Pod != clusterNodeB.Pod {
+				client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{clusterNodeA.IP + ":6379"}, ForceSingleClient: true})
+				if err != nil {
+					log.Error(err, "Failed to create Valkey client")
+					return ctrl.Result{}, err
+				}
+				defer client.Close()
+
+				txt, err := client.Do(ctx, client.B().ClusterNodes().Build()).ToString()
+				if err != nil {
+					log.Error(err, "Failed to get cluster nodes")
+					return ctrl.Result{}, err
+				}
+				clusterNodes := parseClusterNodesExludeSelf(txt)
+				met := false
+				for _, cn := range clusterNodes {
+					if cn.ID == clusterNodeB.ID {
+						met = true
+					}
+				}
+				if met {
+					continue
+				}
+
+				err = client.Do(ctx, client.B().ClusterMeet().Ip(clusterNodeB.IP).Port(6379).Build()).Error()
+				if err != nil {
+					log.Error(err, "Failed to do cluster meet")
+					return ctrl.Result{}, err
+				}
+			}
+		}
+	}
+
+	valkeyCluster = &cachev1alpha1.ValkeyCluster{}
+	err = r.Get(ctx, req.NamespacedName, valkeyCluster)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// If the custom resource is not found then it usually means that it was deleted or not created
+			// In this way, we will stop the reconciliation
+			log.Info("valkeyCluster resource not found. Ignoring since object must be deleted")
+			return ctrl.Result{}, nil
+		}
+		// Error reading the object - requeue the request.
+		log.Error(err, "Failed to get valkeyCluster")
+		return ctrl.Result{}, err
+	}
+
+	clusterNodes, err = r.buildClusterNodes(ctx, valkeyCluster)
+	if err != nil {
+		log.Error(err, "Failed to build cluster nodes")
+		return ctrl.Result{}, err
+	}
+	updateClusterNodes(valkeyCluster, clusterNodes)
+
+	// The following implementation will update the status
+	meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
+		Status: metav1.ConditionFalse, Reason: "Reconciling",
+		Message: fmt.Sprintf("Cluster meet for custom resource (%s) with %d node created successfully", valkeyCluster.Name, len(clusterNodes))})
+
+	if err := r.Status().Update(ctx, valkeyCluster); err != nil {
+		log.Error(err, "Failed to update ValkeyCluster status")
+		return ctrl.Result{}, err
+	}
+
 	return ctrl.Result{}, nil
+}
+
+func (r *ValkeyClusterReconciler) buildClusterNodes(ctx context.Context, valkeyCluster *cachev1alpha1.ValkeyCluster) ([]ClusterNode, error) {
+	clusterNodes := []ClusterNode{}
+	podList := &corev1.PodList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(valkeyCluster.Namespace),
+		client.MatchingLabels(labelsForValkeyCluster(valkeyCluster.Name)),
+	}
+	if err := r.List(ctx, podList, listOpts...); err != nil {
+		return nil, err
+	}
+	for _, pod := range podList.Items {
+		if pod.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		isPodReady := false
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+				isPodReady = true
+			}
+		}
+		if isPodReady {
+			client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{pod.Status.PodIP + ":6379"}, ForceSingleClient: true})
+			if err != nil {
+				return nil, err
+			}
+			defer client.Close()
+			clusterNodesTxt, err := client.Do(ctx, client.B().ClusterNodes().Build()).ToString()
+			if err != nil {
+				return nil, err
+			}
+			cn := parseClusterNode(clusterNodesTxt)
+			cn.Pod = pod.Name
+			clusterNodes = append(clusterNodes, cn)
+		} else {
+			continue
+		}
+	}
+	return clusterNodes, nil
 }
 
 func updateClusterNodes(valkeyCluster *cachev1alpha1.ValkeyCluster, clusterNodes []ClusterNode) {
@@ -632,6 +748,42 @@ type ClusterNode struct {
 	MasterNodeID string
 	Flags        []string
 	SlotRange    string
+}
+
+func parseClusterNodesExludeSelf(clusterNodesTxt string) []ClusterNode {
+	result := make([]ClusterNode, 0)
+	for _, line := range strings.Split(clusterNodesTxt, "\n") {
+		if strings.Contains(line, "myself") {
+			continue
+		}
+		strings.Fields(line)
+		fields := strings.Fields(line)
+		flagsWithoutMyself := []string{}
+		flags := strings.Split(fields[2], ",")
+		for _, flag := range flags {
+			if flag != "myself" {
+				flagsWithoutMyself = append(flagsWithoutMyself, flag)
+			}
+		}
+		slotRange := ""
+		if len(fields) > 8 {
+			slotRange = fields[8]
+		}
+		IP := strings.Split(fields[1], ":")[0]
+		ID := strings.ReplaceAll(fields[0], "txt:", "")
+		MasterNodeID := fields[3]
+		if MasterNodeID == "-" {
+			MasterNodeID = ""
+		}
+		result = append(result, ClusterNode{
+			IP:           IP,
+			ID:           ID,
+			MasterNodeID: MasterNodeID,
+			Flags:        flagsWithoutMyself,
+			SlotRange:    slotRange,
+		})
+	}
+	return result
 }
 
 func parseClusterNode(clusterNodesTxt string) ClusterNode {
