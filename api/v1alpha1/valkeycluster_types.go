@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -37,6 +38,30 @@ type ValkeyClusterSpec struct {
 	// Size defines the number of replicas per shard in the cluster
 	// +operator-sdk:csv:customresourcedefinitions:type=spec
 	Replicas int32 `json:"replicas,omitempty"`
+
+	// Valkey docker image to use
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	Image string `json:"image,omitempty"`
+
+	// Node selector
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Failure domains the valkey cluster will be deployed across
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	FailureDomains []string `json:"failureDomains,omitempty"`
+
+	// Resources requirements and limits for the containers
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Valkey pod storage
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	Storage *corev1.PersistentVolumeClaimSpec `json:"storage,omitempty"`
+
+	// Tolerations
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 }
 
 // ValkeyClusterStatus defines the observed state of ValkeyCluster
@@ -47,6 +72,10 @@ type ValkeyClusterStatus struct {
 	// Conditions store the status conditions of the ValkeyCluster instances
 	// +operator-sdk:csv:customresourcedefinitions:type=status
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
+
+	// Information about each pod
+	// +operator-sdk:csv:customresourcedefinitions:type=status
+	PodInfo map[string]string `json:"pod_roles,omitempty"`
 }
 
 // +kubebuilder:object:root=true
