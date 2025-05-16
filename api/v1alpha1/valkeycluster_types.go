@@ -75,7 +75,14 @@ type ValkeyClusterStatus struct {
 
 	// Information about each pod
 	// +operator-sdk:csv:customresourcedefinitions:type=status
-	PodInfo map[string]string `json:"pod_roles,omitempty"`
+	ClusterNodes []ValkeyClusterNode `json:"cluster_nodes,omitempty"`
+}
+
+type ValkeyClusterNode struct {
+	IP           string `json:"ip,omitempty"`
+	ID           string `json:"id,omitempty"`
+	MasterNodeID string `json:"master_node_id,omitempty"`
+	SlotRange    string `json:"slot_range,omitempty"`
 }
 
 // +kubebuilder:object:root=true

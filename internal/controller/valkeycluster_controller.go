@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"embed"
 	"fmt"
 	"os"
 	"sort"
@@ -27,6 +28,7 @@ import (
 	"github.com/valkey-io/valkey-go"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -43,6 +45,9 @@ import (
 
 	cachev1alpha1 "github.com/kurtmc/valkey-cluster-operator/api/v1alpha1"
 )
+
+//go:embed scripts/*
+var scripts embed.FS
 
 const valkeyClusterFinalizer = "cache.example.com/finalizer"
 
@@ -69,6 +74,7 @@ type ValkeyClusterReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -189,6 +195,12 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			}
 		}
 		return ctrl.Result{}, nil
+	}
+
+	err = r.upsertConfigMap(ctx, valkeyCluster)
+	if err != nil {
+		log.Error(err, "Failed to upsert configmap")
+		return ctrl.Result{}, err
 	}
 
 	// Check if the statefulset already exists, if not create a new one
@@ -320,6 +332,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	log.Info("Cluster nodes", "ClusterNodes", clusterNodes)
+	updateClusterNodes(valkeyCluster, clusterNodes)
 
 	// The following implementation will update the status
 	meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
@@ -332,6 +345,18 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func updateClusterNodes(valkeyCluster *cachev1alpha1.ValkeyCluster, clusterNodes []ClusterNode) {
+	valkeyCluster.Status.ClusterNodes = make([]cachev1alpha1.ValkeyClusterNode, 0)
+	for _, clusterNode := range clusterNodes {
+		valkeyCluster.Status.ClusterNodes = append(valkeyCluster.Status.ClusterNodes, cachev1alpha1.ValkeyClusterNode{
+			IP:           clusterNode.IP,
+			ID:           clusterNode.ID,
+			MasterNodeID: clusterNode.MasterNodeID,
+			SlotRange:    clusterNode.SlotRange,
+		})
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -401,6 +426,7 @@ func (r *ValkeyClusterReconciler) statefulSet(name, failureDomain string, size i
 						SeccompProfile: &corev1.SeccompProfile{
 							Type: corev1.SeccompProfileTypeRuntimeDefault,
 						},
+						FSGroup: &[]int64{1009}[0],
 					},
 					Containers: []corev1.Container{{
 						Image:           image,
@@ -438,6 +464,13 @@ func (r *ValkeyClusterReconciler) statefulSet(name, failureDomain string, size i
 								Name:          "valkey-bus",
 							},
 						},
+						Lifecycle: &corev1.Lifecycle{
+							PreStop: &corev1.LifecycleHandler{
+								Exec: &corev1.ExecAction{
+									Command: []string{"/bin/sh", "/scripts/pre_stop.sh"},
+								},
+							},
+						},
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								TCPSocket: &corev1.TCPSocketAction{
@@ -469,8 +502,24 @@ func (r *ValkeyClusterReconciler) statefulSet(name, failureDomain string, size i
 								Name:      "valkey-data",
 								MountPath: "/data",
 							},
+							{
+								Name:      "valkey-configmap",
+								MountPath: "/scripts",
+							},
 						},
 					}},
+					Volumes: []corev1.Volume{
+						{
+							Name: "valkey-configmap",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: valkeyCluster.Name,
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{
@@ -612,4 +661,45 @@ func parseClusterNode(clusterNodesTxt string) ClusterNode {
 		}
 	}
 	return ClusterNode{}
+}
+
+func (r *ValkeyClusterReconciler) upsertConfigMap(ctx context.Context, valkeyCluster *cachev1alpha1.ValkeyCluster) error {
+	logger := log.FromContext(ctx)
+
+	logger.Info("upserting configmap")
+
+	preStop, err := scripts.ReadFile("scripts/pre_stop.sh")
+	if err != nil {
+		logger.Error(err, "failed to read pre_stop.sh")
+		return err
+	}
+	ls := labelsForValkeyCluster(valkeyCluster.Name)
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      valkeyCluster.Name,
+			Namespace: valkeyCluster.Namespace,
+			Labels:    ls,
+		},
+		Data: map[string]string{
+			"pre_stop.sh": string(preStop),
+		},
+	}
+	if err := controllerutil.SetControllerReference(valkeyCluster, cm, r.Scheme); err != nil {
+		return err
+	}
+	if err := r.Create(ctx, cm); err != nil {
+		if errors.IsAlreadyExists(err) {
+			if err := r.Update(ctx, cm); err != nil {
+				logger.Error(err, "failed to update ConfigMap")
+				return err
+			}
+		} else {
+			logger.Error(err, "failed to create ConfigMap")
+			return err
+		}
+	} else {
+		r.Recorder.Event(valkeyCluster, "Normal", "Created",
+			fmt.Sprintf("ConfigMap %s/%s is created", valkeyCluster.Namespace, valkeyCluster.Name))
+	}
+	return nil
 }
