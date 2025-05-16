@@ -79,10 +79,12 @@ type ValkeyClusterStatus struct {
 }
 
 type ValkeyClusterNode struct {
-	IP           string `json:"ip,omitempty"`
-	ID           string `json:"id,omitempty"`
-	MasterNodeID string `json:"master_node_id,omitempty"`
-	SlotRange    string `json:"slot_range,omitempty"`
+	Pod          string   `json:"pod,omitempty"`
+	IP           string   `json:"ip,omitempty"`
+	ID           string   `json:"id,omitempty"`
+	MasterNodeID string   `json:"master_node_id,omitempty"`
+	SlotRange    string   `json:"slot_range,omitempty"`
+	Flags        []string `json:"flags,omitempty"`
 }
 
 // +kubebuilder:object:root=true

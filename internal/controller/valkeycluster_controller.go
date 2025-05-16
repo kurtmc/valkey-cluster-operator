@@ -324,7 +324,9 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				return ctrl.Result{}, err
 			}
 
-			clusterNodes = append(clusterNodes, parseClusterNode(clusterNodesTxt))
+			cn := parseClusterNode(clusterNodesTxt)
+			cn.Pod = pod.Name
+			clusterNodes = append(clusterNodes, cn)
 		} else {
 			log.Info("Pod not ready", "Pod.Name", pod.Name)
 			return ctrl.Result{RequeueAfter: time.Minute}, nil
@@ -351,10 +353,12 @@ func updateClusterNodes(valkeyCluster *cachev1alpha1.ValkeyCluster, clusterNodes
 	valkeyCluster.Status.ClusterNodes = make([]cachev1alpha1.ValkeyClusterNode, 0)
 	for _, clusterNode := range clusterNodes {
 		valkeyCluster.Status.ClusterNodes = append(valkeyCluster.Status.ClusterNodes, cachev1alpha1.ValkeyClusterNode{
+			Pod:          clusterNode.Pod,
 			IP:           clusterNode.IP,
 			ID:           clusterNode.ID,
 			MasterNodeID: clusterNode.MasterNodeID,
 			SlotRange:    clusterNode.SlotRange,
+			Flags:        clusterNode.Flags,
 		})
 	}
 }
@@ -622,6 +626,7 @@ func imageForValkeyCluster() (string, error) {
 }
 
 type ClusterNode struct {
+	Pod          string
 	IP           string
 	ID           string
 	MasterNodeID string

@@ -366,11 +366,17 @@ spec:
                 description: Information about each pod
                 items:
                   properties:
+                    flags:
+                      items:
+                        type: string
+                      type: array
                     id:
                       type: string
                     ip:
                       type: string
                     master_node_id:
+                      type: string
+                    pod:
                       type: string
                     slot_range:
                       type: string
