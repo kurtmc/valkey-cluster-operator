@@ -758,12 +758,10 @@ func (r *ValkeyClusterReconciler) statefulSet(name string, size int32, valkeyClu
 					Labels: ls,
 				},
 				Spec: corev1.PersistentVolumeClaimSpec{
-					AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					AccessModes:      valkeyCluster.Spec.Storage.AccessModes,
 					StorageClassName: valkeyCluster.Spec.Storage.StorageClassName,
 					Resources: corev1.VolumeResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceStorage: resource.MustParse("50Mi"),
-						},
+						Requests: valkeyCluster.Spec.Resources.Requests,
 					},
 				},
 			}},
