@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -42,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	cachev1alpha1 "github.com/kurtmc/valkey-cluster-operator/api/v1alpha1"
+	internalValkey "github.com/kurtmc/valkey-cluster-operator/internal/controller/valkey"
 )
 
 //go:embed scripts/*
@@ -204,76 +206,6 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	// check if pvs already exist, if not create
-	for stsIdx := 0; stsIdx < int(valkeyCluster.Spec.Shards); stsIdx++ {
-		for pvcIdx := 0; pvcIdx < int(valkeyCluster.Spec.Shards+valkeyCluster.Spec.Replicas); pvcIdx++ {
-			pvcName := fmt.Sprintf("valkey-data-%s-%d-%d", valkeyCluster.Name, stsIdx, pvcIdx)
-			found := &corev1.PersistentVolumeClaim{}
-			err = r.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: valkeyCluster.Namespace}, found)
-			if err != nil && apierrors.IsNotFound(err) {
-				// Define a new pvc
-				pvc, err := r.persistentVolumeClaim(pvcName, valkeyCluster)
-				if err != nil {
-					log.Error(err, "Failed to define new PersistenVolumeClaim resource for ValkeyCluster")
-					// The following implementation will update the status
-					meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
-						Status: metav1.ConditionFalse, Reason: "Reconciling",
-						Message: fmt.Sprintf("Failed to create PersistentVolumeClaim for the custom resource (%s): (%s)", valkeyCluster.Name, err)})
-
-					if err := r.Status().Update(ctx, valkeyCluster); err != nil {
-						log.Error(err, "Failed to update ValkeyCluster status")
-						return ctrl.Result{}, err
-					}
-
-					return ctrl.Result{}, err
-				}
-				log.Info("Creating a new PersistentVolumeClaim",
-					"StatefulSet.Namespace", pvc.Namespace, "StatefulSet.Name", pvc.Name)
-				if err = r.Create(ctx, pvc); err != nil {
-					log.Error(err, "Failed to create new PersistentVolumeClaim",
-						"PersistentVolumeClaim.Namespace", pvc.Namespace, "PersistentVolumeClaim.Name", pvc.Name)
-					return ctrl.Result{}, err
-				}
-				r.Recorder.Event(valkeyCluster, "Normal", "Created",
-					fmt.Sprintf("PersistentVolumeClaim %s/%s is created", valkeyCluster.Namespace, pvc.Name))
-				return ctrl.Result{Requeue: true}, nil
-			} else if err != nil {
-				log.Error(err, "Failed to get StatefulSet")
-				// Let's return the error for the reconciliation be re-trigged again
-				return ctrl.Result{}, err
-			}
-
-			if found.Spec.Resources.Requests.Storage().Cmp(*valkeyCluster.Spec.Storage.Resources.Requests.Storage()) == -1 {
-				found.Spec.Resources.Requests[corev1.ResourceStorage] = *valkeyCluster.Spec.Storage.Resources.Requests.Storage()
-				if err = r.Update(ctx, found); err != nil {
-					log.Error(err, "Failed to update PersistentVolumeClaim",
-						"PersistentVolumeClaim.Namespace", found.Namespace, "PersistentVolumeClaim.Name", found.Name)
-
-					// Re-fetch the valkeyCluster Custom Resource before updating the status
-					// so that we have the latest state of the resource on the cluster and we will avoid
-					// raising the error "the object has been modified, please apply
-					// your changes to the latest version and try again" which would re-trigger the reconciliation
-					if err := r.Get(ctx, req.NamespacedName, valkeyCluster); err != nil {
-						log.Error(err, "Failed to re-fetch valkeyCluster")
-						return ctrl.Result{}, err
-					}
-
-					// The following implementation will update the status
-					meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
-						Status: metav1.ConditionFalse, Reason: "Resizing",
-						Message: fmt.Sprintf("Failed to update the size for the custom resource (%s): (%s)", valkeyCluster.Name, err)})
-
-					if err := r.Status().Update(ctx, valkeyCluster); err != nil {
-						log.Error(err, "Failed to update ValkeyCluster status")
-						return ctrl.Result{}, err
-					}
-					return ctrl.Result{}, err
-				}
-				return ctrl.Result{Requeue: true}, nil
-			}
-		}
-	}
-
 	// Check if the statefulset already exists, if not create a new one
 	for stsIdx := 0; stsIdx < int(valkeyCluster.Spec.Shards); stsIdx++ {
 		found := &appsv1.StatefulSet{}
@@ -358,8 +290,80 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 
+	// check if pvs already exist, they should be created by the statefulset
+	for stsIdx := 0; stsIdx < int(valkeyCluster.Spec.Shards); stsIdx++ {
+		for pvcIdx := 0; pvcIdx < int(valkeyCluster.Spec.Shards+valkeyCluster.Spec.Replicas); pvcIdx++ {
+			pvcName := fmt.Sprintf("valkey-data-%s-%d-%d", valkeyCluster.Name, stsIdx, pvcIdx)
+			found := &corev1.PersistentVolumeClaim{}
+			err = r.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: valkeyCluster.Namespace}, found)
+			if err != nil && apierrors.IsNotFound(err) {
+				// pvc, err := r.persistentVolumeClaim(pvcName, valkeyCluster)
+				// if err != nil {
+				// 	log.Error(err, "Failed to define new PersistenVolumeClaim resource for ValkeyCluster")
+				// 	// The following implementation will update the status
+				// 	meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
+				// 		Status: metav1.ConditionFalse, Reason: "Reconciling",
+				// 		Message: fmt.Sprintf("Failed to create PersistentVolumeClaim for the custom resource (%s): (%s)", valkeyCluster.Name, err)})
+				//
+				// 	if err := r.Status().Update(ctx, valkeyCluster); err != nil {
+				// 		log.Error(err, "Failed to update ValkeyCluster status")
+				// 		return ctrl.Result{}, err
+				// 	}
+				//
+				// 	return ctrl.Result{}, err
+				// }
+				// log.Info("Creating a new PersistentVolumeClaim",
+				// 	"StatefulSet.Namespace", pvc.Namespace, "StatefulSet.Name", pvc.Name)
+				// if err = r.Create(ctx, pvc); err != nil {
+				// 	log.Error(err, "Failed to create new PersistentVolumeClaim",
+				// 		"PersistentVolumeClaim.Namespace", pvc.Namespace, "PersistentVolumeClaim.Name", pvc.Name)
+				// 	return ctrl.Result{}, err
+				// }
+				// r.Recorder.Event(valkeyCluster, "Normal", "Created",
+				// 	fmt.Sprintf("PersistentVolumeClaim %s/%s is created", valkeyCluster.Namespace, pvc.Name))
+				log.Error(err, "Failed to get PersistentVolumeClaims")
+				return ctrl.Result{}, err
+			} else if err != nil {
+				log.Error(err, "Failed to get PersistentVolumeClaims")
+				// Let's return the error for the reconciliation be re-trigged again
+				return ctrl.Result{}, err
+			}
+
+			if found.Spec.Resources.Requests.Storage().Cmp(*valkeyCluster.Spec.Storage.Resources.Requests.Storage()) == -1 {
+				found.Spec.Resources.Requests[corev1.ResourceStorage] = *valkeyCluster.Spec.Storage.Resources.Requests.Storage()
+				if err = r.Update(ctx, found); err != nil {
+					log.Error(err, "Failed to update PersistentVolumeClaim",
+						"PersistentVolumeClaim.Namespace", found.Namespace, "PersistentVolumeClaim.Name", found.Name)
+
+					// Re-fetch the valkeyCluster Custom Resource before updating the status
+					// so that we have the latest state of the resource on the cluster and we will avoid
+					// raising the error "the object has been modified, please apply
+					// your changes to the latest version and try again" which would re-trigger the reconciliation
+					if err := r.Get(ctx, req.NamespacedName, valkeyCluster); err != nil {
+						log.Error(err, "Failed to re-fetch valkeyCluster")
+						return ctrl.Result{}, err
+					}
+
+					// The following implementation will update the status
+					meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
+						Status: metav1.ConditionFalse, Reason: "Resizing",
+						Message: fmt.Sprintf("Failed to update the size for the custom resource (%s): (%s)", valkeyCluster.Name, err)})
+
+					if err := r.Status().Update(ctx, valkeyCluster); err != nil {
+						log.Error(err, "Failed to update ValkeyCluster status")
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, err
+				}
+				r.Recorder.Event(valkeyCluster, "Normal", "Updated",
+					fmt.Sprintf("PersistentVolumeClaim %s/%s is updated", found.Namespace, found.Name))
+				return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
+			}
+		}
+	}
+
 	// Check the status of the valkey cluster
-	clusterNodes := []ClusterNode{}
+	clusterNodes := []*internalValkey.ClusterNode{}
 
 	// get all the pods in the statefulset
 	podList := &corev1.PodList{}
@@ -398,7 +402,11 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				return ctrl.Result{}, err
 			}
 
-			cn := parseClusterNode(clusterNodesTxt)
+			cn, err := internalValkey.ParseClusterNode(clusterNodesTxt)
+			if err != nil {
+				log.Error(err, "Failed to parse cluster node")
+				return ctrl.Result{}, err
+			}
 			cn.Pod = pod.Name
 			clusterNodes = append(clusterNodes, cn)
 		} else {
@@ -410,19 +418,6 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// there should be the correct number of cluster nodes now
 	if len(clusterNodes) != int(statefulSetSizeForValkeyCluster(valkeyCluster)) {
 		err := fmt.Errorf("Number of clusterNodes (%d) != number of expected pods (%d)", len(clusterNodes), int(statefulSetSizeForValkeyCluster(valkeyCluster)))
-		return ctrl.Result{}, err
-	}
-
-	log.Info("Cluster nodes", "ClusterNodes", clusterNodes)
-	updateClusterNodes(valkeyCluster, clusterNodes)
-
-	// The following implementation will update the status
-	meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
-		Status: metav1.ConditionFalse, Reason: "Reconciling",
-		Message: fmt.Sprintf("StatefulSet for custom resource (%s) with %d replicas created successfully", valkeyCluster.Name, len(podList.Items))})
-
-	if err := r.Status().Update(ctx, valkeyCluster); err != nil {
-		log.Error(err, "Failed to update ValkeyCluster status")
 		return ctrl.Result{}, err
 	}
 
@@ -441,7 +436,11 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 					log.Error(err, "Failed to get cluster nodes")
 					return ctrl.Result{}, err
 				}
-				clusterNodes := parseClusterNodesExludeSelf(txt)
+				clusterNodes, err := internalValkey.ParseClusterNodesExludeSelf(txt)
+				if err != nil {
+					log.Error(err, "Failed to parse cluster nodes")
+					return ctrl.Result{}, err
+				}
 				met := false
 				for _, cn := range clusterNodes {
 					if cn.ID == clusterNodeB.ID {
@@ -455,6 +454,25 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				err = client.Do(ctx, client.B().ClusterMeet().Ip(clusterNodeB.IP).Port(6379).Build()).Error()
 				if err != nil {
 					log.Error(err, "Failed to do cluster meet")
+					return ctrl.Result{}, err
+				}
+
+				log.Info("Cluster nodes", "ClusterNodes", clusterNodes)
+				clusterNodes, err = r.buildClusterNodes(ctx, valkeyCluster)
+				if err != nil {
+					log.Error(err, "Failed to build cluster nodes")
+					return ctrl.Result{}, err
+				}
+
+				updateClusterNodes(valkeyCluster, clusterNodes)
+
+				// The following implementation will update the status
+				meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
+					Status: metav1.ConditionFalse, Reason: "Reconciling",
+					Message: fmt.Sprintf("StatefulSet for custom resource (%s) with %d replicas created successfully", valkeyCluster.Name, len(podList.Items))})
+
+				if err := r.Status().Update(ctx, valkeyCluster); err != nil {
+					log.Error(err, "Failed to update ValkeyCluster status")
 					return ctrl.Result{}, err
 				}
 			}
@@ -495,8 +513,8 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{}, nil
 }
 
-func (r *ValkeyClusterReconciler) buildClusterNodes(ctx context.Context, valkeyCluster *cachev1alpha1.ValkeyCluster) ([]ClusterNode, error) {
-	clusterNodes := []ClusterNode{}
+func (r *ValkeyClusterReconciler) buildClusterNodes(ctx context.Context, valkeyCluster *cachev1alpha1.ValkeyCluster) ([]*internalValkey.ClusterNode, error) {
+	clusterNodes := []*internalValkey.ClusterNode{}
 	podList := &corev1.PodList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(valkeyCluster.Namespace),
@@ -525,7 +543,10 @@ func (r *ValkeyClusterReconciler) buildClusterNodes(ctx context.Context, valkeyC
 			if err != nil {
 				return nil, err
 			}
-			cn := parseClusterNode(clusterNodesTxt)
+			cn, err := internalValkey.ParseClusterNode(clusterNodesTxt)
+			if err != nil {
+				return nil, err
+			}
 			cn.Pod = pod.Name
 			clusterNodes = append(clusterNodes, cn)
 		} else {
@@ -535,7 +556,7 @@ func (r *ValkeyClusterReconciler) buildClusterNodes(ctx context.Context, valkeyC
 	return clusterNodes, nil
 }
 
-func updateClusterNodes(valkeyCluster *cachev1alpha1.ValkeyCluster, clusterNodes []ClusterNode) {
+func updateClusterNodes(valkeyCluster *cachev1alpha1.ValkeyCluster, clusterNodes []*internalValkey.ClusterNode) {
 	valkeyCluster.Status.ClusterNodes = make([]cachev1alpha1.ValkeyClusterNode, 0)
 	for _, clusterNode := range clusterNodes {
 		valkeyCluster.Status.ClusterNodes = append(valkeyCluster.Status.ClusterNodes, cachev1alpha1.ValkeyClusterNode{
@@ -731,21 +752,21 @@ func (r *ValkeyClusterReconciler) statefulSet(name string, size int32, valkeyClu
 					},
 				},
 			},
-			// VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{
-			// 	ObjectMeta: metav1.ObjectMeta{
-			// 		Name:   "valkey-data",
-			// 		Labels: ls,
-			// 	},
-			// 	Spec: corev1.PersistentVolumeClaimSpec{
-			// 		AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			// 		StorageClassName: valkeyCluster.Spec.Storage.StorageClassName,
-			// 		Resources: corev1.VolumeResourceRequirements{
-			// 			Requests: corev1.ResourceList{
-			// 				corev1.ResourceStorage: resource.MustParse("50Mi"),
-			// 			},
-			// 		},
-			// 	},
-			// }},
+			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "valkey-data",
+					Labels: ls,
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					StorageClassName: valkeyCluster.Spec.Storage.StorageClassName,
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("50Mi"),
+						},
+					},
+				},
+			}},
 		},
 	}
 	// Set the ownerRef for the StatefulSet
@@ -784,88 +805,8 @@ func imageForValkeyCluster() (string, error) {
 	return image, nil
 }
 
-type ClusterNode struct {
-	Pod          string
-	IP           string
-	ID           string
-	MasterNodeID string
-	Flags        []string
-	SlotRange    string
-}
-
-func parseClusterNodesExludeSelf(clusterNodesTxt string) []ClusterNode {
-	result := make([]ClusterNode, 0)
-	for _, line := range strings.Split(clusterNodesTxt, "\n") {
-		if strings.Contains(line, "myself") {
-			continue
-		}
-		strings.Fields(line)
-		fields := strings.Fields(line)
-		flagsWithoutMyself := []string{}
-		flags := strings.Split(fields[2], ",")
-		for _, flag := range flags {
-			if flag != "myself" {
-				flagsWithoutMyself = append(flagsWithoutMyself, flag)
-			}
-		}
-		slotRange := ""
-		if len(fields) > 8 {
-			slotRange = fields[8]
-		}
-		IP := strings.Split(fields[1], ":")[0]
-		ID := strings.ReplaceAll(fields[0], "txt:", "")
-		MasterNodeID := fields[3]
-		if MasterNodeID == "-" {
-			MasterNodeID = ""
-		}
-		result = append(result, ClusterNode{
-			IP:           IP,
-			ID:           ID,
-			MasterNodeID: MasterNodeID,
-			Flags:        flagsWithoutMyself,
-			SlotRange:    slotRange,
-		})
-	}
-	return result
-}
-
-func parseClusterNode(clusterNodesTxt string) ClusterNode {
-	for _, line := range strings.Split(clusterNodesTxt, "\n") {
-		if strings.Contains(line, "myself") {
-			strings.Fields(line)
-			fields := strings.Fields(line)
-			flagsWithoutMyself := []string{}
-			flags := strings.Split(fields[2], ",")
-			for _, flag := range flags {
-				if flag != "myself" {
-					flagsWithoutMyself = append(flagsWithoutMyself, flag)
-				}
-			}
-			slotRange := ""
-			if len(fields) > 8 {
-				slotRange = fields[8]
-			}
-			IP := strings.Split(fields[1], ":")[0]
-			ID := strings.ReplaceAll(fields[0], "txt:", "")
-			MasterNodeID := fields[3]
-			if MasterNodeID == "-" {
-				MasterNodeID = ""
-			}
-			return ClusterNode{
-				IP:           IP,
-				ID:           ID,
-				MasterNodeID: MasterNodeID,
-				Flags:        flagsWithoutMyself,
-				SlotRange:    slotRange,
-			}
-		}
-	}
-	return ClusterNode{}
-}
-
 func (r *ValkeyClusterReconciler) upsertConfigMap(ctx context.Context, valkeyCluster *cachev1alpha1.ValkeyCluster) error {
 	logger := log.FromContext(ctx)
-
 	logger.Info("upserting configmap")
 
 	preStop, err := scripts.ReadFile("scripts/pre_stop.sh")
