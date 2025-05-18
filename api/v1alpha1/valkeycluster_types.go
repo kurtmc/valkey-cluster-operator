@@ -47,10 +47,6 @@ type ValkeyClusterSpec struct {
 	// +operator-sdk:csv:customresourcedefinitions:type=spec
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 
-	// Failure domains the valkey cluster will be deployed across
-	// +operator-sdk:csv:customresourcedefinitions:type=spec
-	FailureDomains []string `json:"failureDomains,omitempty"`
-
 	// Resources requirements and limits for the containers
 	// +operator-sdk:csv:customresourcedefinitions:type=spec
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`

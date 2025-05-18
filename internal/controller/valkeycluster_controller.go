@@ -21,7 +21,6 @@ import (
 	"embed"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -31,7 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -77,6 +75,7 @@ type ValkeyClusterReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -205,15 +204,86 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	// Check if the statefulset already exists, if not create a new one
-	stses := statefulSets(valkeyCluster)
+	// check if pvs already exist, if not create
+	for stsIdx := 0; stsIdx < int(valkeyCluster.Spec.Shards); stsIdx++ {
+		for pvcIdx := 0; pvcIdx < int(valkeyCluster.Spec.Shards+valkeyCluster.Spec.Replicas); pvcIdx++ {
+			pvcName := fmt.Sprintf("valkey-data-%s-%d-%d", valkeyCluster.Name, stsIdx, pvcIdx)
+			found := &corev1.PersistentVolumeClaim{}
+			err = r.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: valkeyCluster.Namespace}, found)
+			if err != nil && apierrors.IsNotFound(err) {
+				// Define a new pvc
+				pvc, err := r.persistentVolumeClaim(pvcName, valkeyCluster)
+				if err != nil {
+					log.Error(err, "Failed to define new PersistenVolumeClaim resource for ValkeyCluster")
+					// The following implementation will update the status
+					meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
+						Status: metav1.ConditionFalse, Reason: "Reconciling",
+						Message: fmt.Sprintf("Failed to create PersistentVolumeClaim for the custom resource (%s): (%s)", valkeyCluster.Name, err)})
 
-	for _, vkSts := range stses {
+					if err := r.Status().Update(ctx, valkeyCluster); err != nil {
+						log.Error(err, "Failed to update ValkeyCluster status")
+						return ctrl.Result{}, err
+					}
+
+					return ctrl.Result{}, err
+				}
+				log.Info("Creating a new PersistentVolumeClaim",
+					"StatefulSet.Namespace", pvc.Namespace, "StatefulSet.Name", pvc.Name)
+				if err = r.Create(ctx, pvc); err != nil {
+					log.Error(err, "Failed to create new PersistentVolumeClaim",
+						"PersistentVolumeClaim.Namespace", pvc.Namespace, "PersistentVolumeClaim.Name", pvc.Name)
+					return ctrl.Result{}, err
+				}
+				r.Recorder.Event(valkeyCluster, "Normal", "Created",
+					fmt.Sprintf("PersistentVolumeClaim %s/%s is created", valkeyCluster.Namespace, pvc.Name))
+				return ctrl.Result{Requeue: true}, nil
+			} else if err != nil {
+				log.Error(err, "Failed to get StatefulSet")
+				// Let's return the error for the reconciliation be re-trigged again
+				return ctrl.Result{}, err
+			}
+
+			if found.Spec.Resources.Requests.Storage().Cmp(*valkeyCluster.Spec.Storage.Resources.Requests.Storage()) == -1 {
+				found.Spec.Resources.Requests[corev1.ResourceStorage] = *valkeyCluster.Spec.Storage.Resources.Requests.Storage()
+				if err = r.Update(ctx, found); err != nil {
+					log.Error(err, "Failed to update PersistentVolumeClaim",
+						"PersistentVolumeClaim.Namespace", found.Namespace, "PersistentVolumeClaim.Name", found.Name)
+
+					// Re-fetch the valkeyCluster Custom Resource before updating the status
+					// so that we have the latest state of the resource on the cluster and we will avoid
+					// raising the error "the object has been modified, please apply
+					// your changes to the latest version and try again" which would re-trigger the reconciliation
+					if err := r.Get(ctx, req.NamespacedName, valkeyCluster); err != nil {
+						log.Error(err, "Failed to re-fetch valkeyCluster")
+						return ctrl.Result{}, err
+					}
+
+					// The following implementation will update the status
+					meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
+						Status: metav1.ConditionFalse, Reason: "Resizing",
+						Message: fmt.Sprintf("Failed to update the size for the custom resource (%s): (%s)", valkeyCluster.Name, err)})
+
+					if err := r.Status().Update(ctx, valkeyCluster); err != nil {
+						log.Error(err, "Failed to update ValkeyCluster status")
+						return ctrl.Result{}, err
+					}
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{Requeue: true}, nil
+			}
+		}
+	}
+
+	// Check if the statefulset already exists, if not create a new one
+	for stsIdx := 0; stsIdx < int(valkeyCluster.Spec.Shards); stsIdx++ {
 		found := &appsv1.StatefulSet{}
-		err = r.Get(ctx, types.NamespacedName{Name: vkSts.Name, Namespace: valkeyCluster.Namespace}, found)
+
+		stsName := fmt.Sprintf("%s-%d", valkeyCluster.Name, stsIdx)
+
+		err = r.Get(ctx, types.NamespacedName{Name: stsName, Namespace: valkeyCluster.Namespace}, found)
 		if err != nil && apierrors.IsNotFound(err) {
 			// Define a new statefulset
-			sts, err := r.statefulSet(vkSts.Name, vkSts.FailureDomain, vkSts.Size, valkeyCluster)
+			sts, err := r.statefulSet(stsName, valkeyCluster.Spec.Shards+valkeyCluster.Spec.Replicas, valkeyCluster)
 			if err != nil {
 				log.Error(err, "Failed to define new StatefulSet resource for ValkeyCluster")
 
@@ -251,8 +321,8 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 
 		// We can simply increase the number of replicas if we are scaling up
-		if *found.Spec.Replicas != vkSts.Size && *found.Spec.Replicas < vkSts.Size {
-			found.Spec.Replicas = &vkSts.Size
+		if *found.Spec.Replicas != (valkeyCluster.Spec.Shards+valkeyCluster.Spec.Replicas) && *found.Spec.Replicas < (valkeyCluster.Spec.Shards+valkeyCluster.Spec.Replicas) {
+			found.Spec.Replicas = &[]int32{(valkeyCluster.Spec.Shards + valkeyCluster.Spec.Replicas)}[0]
 			if err = r.Update(ctx, found); err != nil {
 				log.Error(err, "Failed to update StatefulSet",
 					"StatefulSet.Namespace", found.Namespace, "StatefulSet.Name", found.Name)
@@ -512,8 +582,28 @@ func statefulSetSizeForValkeyCluster(valkeyCluster *cachev1alpha1.ValkeyCluster)
 	return valkeyCluster.Spec.Shards + valkeyCluster.Spec.Shards*valkeyCluster.Spec.Replicas
 }
 
+// persistentVolumeClaim returns a ValkeyCluster PVC object
+func (r *ValkeyClusterReconciler) persistentVolumeClaim(name string, valkeyCluster *cachev1alpha1.ValkeyCluster) (*corev1.PersistentVolumeClaim, error) {
+	ls := labelsForValkeyCluster(valkeyCluster.Name)
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: valkeyCluster.Namespace,
+			Labels:    ls,
+		},
+		Spec: *valkeyCluster.Spec.Storage,
+	}
+	// Set the ownerRef for the PersistentVolumeClaim
+	// More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/owners-dependents/
+	if err := ctrl.SetControllerReference(valkeyCluster, pvc, r.Scheme); err != nil {
+		return nil, err
+	}
+
+	return pvc, nil
+}
+
 // statefulSet returns a ValkeyCluster StatefulSet object
-func (r *ValkeyClusterReconciler) statefulSet(name, failureDomain string, size int32, valkeyCluster *cachev1alpha1.ValkeyCluster) (*appsv1.StatefulSet, error) {
+func (r *ValkeyClusterReconciler) statefulSet(name string, size int32, valkeyCluster *cachev1alpha1.ValkeyCluster) (*appsv1.StatefulSet, error) {
 	// Get the Operand image
 	image, err := imageForValkeyCluster()
 	if err != nil {
@@ -521,7 +611,6 @@ func (r *ValkeyClusterReconciler) statefulSet(name, failureDomain string, size i
 	}
 
 	ls := labelsForValkeyCluster(valkeyCluster.Name)
-	ls["failureDomain"] = failureDomain
 
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -642,21 +731,21 @@ func (r *ValkeyClusterReconciler) statefulSet(name, failureDomain string, size i
 					},
 				},
 			},
-			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   "valkey-data",
-					Labels: ls,
-				},
-				Spec: corev1.PersistentVolumeClaimSpec{
-					AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-					StorageClassName: valkeyCluster.Spec.Storage.StorageClassName,
-					Resources: corev1.VolumeResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceStorage: resource.MustParse("50Mi"),
-						},
-					},
-				},
-			}},
+			// VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{
+			// 	ObjectMeta: metav1.ObjectMeta{
+			// 		Name:   "valkey-data",
+			// 		Labels: ls,
+			// 	},
+			// 	Spec: corev1.PersistentVolumeClaimSpec{
+			// 		AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			// 		StorageClassName: valkeyCluster.Spec.Storage.StorageClassName,
+			// 		Resources: corev1.VolumeResourceRequirements{
+			// 			Requests: corev1.ResourceList{
+			// 				corev1.ResourceStorage: resource.MustParse("50Mi"),
+			// 			},
+			// 		},
+			// 	},
+			// }},
 		},
 	}
 	// Set the ownerRef for the StatefulSet
@@ -666,52 +755,6 @@ func (r *ValkeyClusterReconciler) statefulSet(name, failureDomain string, size i
 	}
 
 	return sts, nil
-}
-
-type ValkeyStatefulSet struct {
-	Name          string
-	FailureDomain string
-	Size          int32
-}
-
-func statefulSets(valkeyCluster *cachev1alpha1.ValkeyCluster) []ValkeyStatefulSet {
-	result := make([]ValkeyStatefulSet, 0)
-
-	totalPods := valkeyCluster.Spec.Shards + valkeyCluster.Spec.Shards*valkeyCluster.Spec.Replicas
-	sizePerSts := totalPods / int32(len(valkeyCluster.Spec.FailureDomains))
-
-	failureDomains := make([]string, len(valkeyCluster.Spec.FailureDomains))
-	copy(failureDomains, valkeyCluster.Spec.FailureDomains)
-	sort.Strings(failureDomains)
-	for _, fd := range failureDomains {
-		var size int32 = 0
-		if totalPods >= sizePerSts {
-			size = sizePerSts
-		} else {
-			size = totalPods
-		}
-		totalPods = totalPods - size
-
-		stsName := fmt.Sprintf("%s-%s", valkeyCluster.Name, fd)
-		result = append(result, ValkeyStatefulSet{
-			Name:          stsName,
-			FailureDomain: fd,
-			Size:          size,
-		})
-	}
-	return result
-}
-
-func statefulsetNames(valkeyCluster *cachev1alpha1.ValkeyCluster) []string {
-	failureDomains := make([]string, len(valkeyCluster.Spec.FailureDomains))
-	copy(failureDomains, valkeyCluster.Spec.FailureDomains)
-	sort.Strings(failureDomains)
-	result := []string{}
-	for _, fd := range failureDomains {
-		stsName := fmt.Sprintf("%s-%s", valkeyCluster.Name, fd)
-		result = append(result, stsName)
-	}
-	return result
 }
 
 // labelsForValkeyCluster returns the labels for selecting the resources

@@ -211,11 +211,6 @@ func (in *ValkeyClusterSpec) DeepCopyInto(out *ValkeyClusterSpec) {
 			(*out)[key] = val
 		}
 	}
-	if in.FailureDomains != nil {
-		in, out := &in.FailureDomains, &out.FailureDomains
-		*out = make([]string, len(*in))
-		copy(*out, *in)
-	}
 	if in.Resources != nil {
 		in, out := &in.Resources, &out.Resources
 		*out = new(corev1.ResourceRequirements)

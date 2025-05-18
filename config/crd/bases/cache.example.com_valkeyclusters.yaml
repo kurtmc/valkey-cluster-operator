@@ -39,11 +39,6 @@ spec:
           spec:
             description: ValkeyClusterSpec defines the desired state of ValkeyCluster
             properties:
-              failureDomains:
-                description: Failure domains the valkey cluster will be deployed across
-                items:
-                  type: string
-                type: array
               image:
                 description: Valkey docker image to use
                 type: string
