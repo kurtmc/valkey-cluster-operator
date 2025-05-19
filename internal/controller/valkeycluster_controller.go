@@ -214,7 +214,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if err != nil && apierrors.IsNotFound(err) {
 			log.Info(fmt.Sprintf("StatefulSet %s not found", stsName))
 			// Define a new statefulset
-			sts, err := r.statefulSet(stsName, valkeyCluster.Spec.Shards+valkeyCluster.Spec.Replicas, valkeyCluster)
+			sts, err := r.statefulSet(stsName, 1+valkeyCluster.Spec.Replicas, valkeyCluster)
 			if err != nil {
 				log.Error(err, "Failed to define new StatefulSet resource for ValkeyCluster")
 
@@ -252,7 +252,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 
 		// We can simply increase the number of replicas if we are scaling up
-		if *found.Spec.Replicas != (valkeyCluster.Spec.Shards+valkeyCluster.Spec.Replicas) && *found.Spec.Replicas < (valkeyCluster.Spec.Shards+valkeyCluster.Spec.Replicas) {
+		if *found.Spec.Replicas != (1+valkeyCluster.Spec.Replicas) && *found.Spec.Replicas < (1+valkeyCluster.Spec.Replicas) {
 			log.Info(fmt.Sprintf("StatefulSet needs to increase replicas from %d to %d", *found.Spec.Replicas, (valkeyCluster.Spec.Shards + valkeyCluster.Spec.Replicas)))
 			found.Spec.Replicas = &[]int32{(valkeyCluster.Spec.Shards + valkeyCluster.Spec.Replicas)}[0]
 			if err = r.Update(ctx, found); err != nil {
@@ -614,7 +614,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		var existingSlotRange *internalValkey.ClusterSlotRange
 		for _, cn := range clusterNodesForShard {
 			if cn.SlotRange != nil {
-				log.Info(fmt.Sprintf("There is an existing slot range for shard %d: %s", shardIdx, existingSlotRange))
+				log.Info(fmt.Sprintf("There is an existing slot range for shard %d: %s", shardIdx, cn.SlotRange.String()))
 				existingSlotRange = cn.SlotRange
 			}
 			if (cn.SlotRange != nil) && (cn.SlotRange.Start == expectedSlotRange.Start && cn.SlotRange.End == expectedSlotRange.End) {
@@ -772,7 +772,7 @@ func (r *ValkeyClusterReconciler) doFinalizerOperationsForValkeyCluster(cr *cach
 }
 
 func statefulSetSizeForValkeyCluster(valkeyCluster *cachev1alpha1.ValkeyCluster) int32 {
-	return valkeyCluster.Spec.Shards + valkeyCluster.Spec.Shards*valkeyCluster.Spec.Replicas
+	return valkeyCluster.Spec.Shards + valkeyCluster.Spec.Shards*valkeyCluster.Spec.Shards*valkeyCluster.Spec.Replicas
 }
 
 // persistentVolumeClaim returns a ValkeyCluster PVC object
@@ -934,9 +934,7 @@ func (r *ValkeyClusterReconciler) statefulSet(name string, size int32, valkeyClu
 				Spec: corev1.PersistentVolumeClaimSpec{
 					AccessModes:      valkeyCluster.Spec.Storage.AccessModes,
 					StorageClassName: valkeyCluster.Spec.Storage.StorageClassName,
-					Resources: corev1.VolumeResourceRequirements{
-						Requests: valkeyCluster.Spec.Resources.Requests,
-					},
+					Resources:        valkeyCluster.Spec.Storage.Resources,
 				},
 			}},
 		},
