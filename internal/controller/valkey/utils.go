@@ -29,7 +29,7 @@ func parseClusterNodeLine(line string) (*ClusterNode, error) {
 			flagsWithoutMyself = append(flagsWithoutMyself, flag)
 		}
 	}
-	var slotRange ClusterSlotRange
+	var slotRange *ClusterSlotRange
 	if len(fields) > 8 {
 		parts := strings.Split(fields[8], "-")
 
@@ -37,11 +37,11 @@ func parseClusterNodeLine(line string) (*ClusterNode, error) {
 		if err != nil {
 			return nil, err
 		}
-		end, err := strconv.Atoi(parts[2])
+		end, err := strconv.Atoi(parts[1])
 		if err != nil {
 			return nil, err
 		}
-		slotRange = ClusterSlotRange{
+		slotRange = &ClusterSlotRange{
 			Start: start,
 			End:   end,
 		}
@@ -58,7 +58,7 @@ func parseClusterNodeLine(line string) (*ClusterNode, error) {
 		ID:           ID,
 		MasterNodeID: MasterNodeID,
 		Flags:        flagsWithoutMyself,
-		SlotRange:    &slotRange,
+		SlotRange:    slotRange,
 	}, nil
 }
 
@@ -98,6 +98,9 @@ type ClusterSlotRange struct {
 }
 
 func (c *ClusterSlotRange) String() string {
+	if c == nil {
+		return "-"
+	}
 	return fmt.Sprintf("%d-%d", c.Start, c.End)
 }
 

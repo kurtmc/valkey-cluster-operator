@@ -534,19 +534,19 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				log.Info(fmt.Sprintf("There is an existing slot range for shard %d: %s", shardIdx, existingSlotRange))
 				existingSlotRange = cn.SlotRange
 			}
-			if cn.SlotRange.Start == expectedSlotRange.Start && cn.SlotRange.End == expectedSlotRange.End {
+			if (cn.SlotRange != nil) && (cn.SlotRange.Start == expectedSlotRange.Start && cn.SlotRange.End == expectedSlotRange.End) {
 				found = true
 			}
 		}
 		if !found {
-			log.Info(fmt.Sprintf("Expected slot range %s for shard %d not found", expectedSlotRange, shardIdx))
+			log.Info(fmt.Sprintf("Expected slot range %+v for shard %d not found", expectedSlotRange, shardIdx))
 			if existingSlotRange == nil { // there is not slot range to we can just assign
 				client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{clusterNodesForShard[0].IP + ":6379"}, ForceSingleClient: true})
 				if err != nil {
 					log.Error(err, "Failed to get client")
 					return ctrl.Result{}, err
 				}
-				err = client.Do(ctx, client.B().ClusterAddslotsrange().StartSlotEndSlot().StartSlotEndSlot(int64(expectedSlotRange.Start), int64(existingSlotRange.End)).Build()).Error()
+				err = client.Do(ctx, client.B().ClusterAddslotsrange().StartSlotEndSlot().StartSlotEndSlot(int64(expectedSlotRange.Start), int64(expectedSlotRange.End)).Build()).Error()
 				if err != nil {
 					log.Error(err, "Failed to add slot range")
 					return ctrl.Result{}, err
@@ -571,33 +571,30 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			}
 		}
 
-		found := false
-		expectedSlotRange := slotRanges[shardIdx]
-		var existingSlotRange *internalValkey.ClusterSlotRange
+		var primary *internalValkey.ClusterNode
 		for _, cn := range clusterNodesForShard {
 			if cn.SlotRange != nil {
-				log.Info(fmt.Sprintf("There is an existing slot range for shard %d: %s", shardIdx, existingSlotRange))
-				existingSlotRange = cn.SlotRange
-			}
-			if cn.SlotRange.Start == expectedSlotRange.Start && cn.SlotRange.End == expectedSlotRange.End {
-				found = true
+				primary = cn
+
 			}
 		}
-		if !found {
-			log.Info(fmt.Sprintf("Expected slot range %s for shard %d not found", expectedSlotRange, shardIdx))
-			if existingSlotRange == nil { // there is not slot range to we can just assign
-				client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{clusterNodesForShard[0].IP + ":6379"}, ForceSingleClient: true})
-				if err != nil {
-					log.Error(err, "Failed to get client")
-					return ctrl.Result{}, err
+		if primary != nil {
+			for _, cn := range clusterNodesForShard {
+				if cn.Pod != primary.Pod {
+					if cn.MasterNodeID == primary.ID {
+						continue
+					}
+					client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{cn.IP + ":6379"}, ForceSingleClient: true})
+					if err != nil {
+						log.Error(err, "Failed to get client")
+						return ctrl.Result{}, err
+					}
+					err = client.Do(ctx, client.B().ClusterReplicate().NodeId(primary.ID).Build()).Error()
+					if err != nil {
+						log.Error(err, "Failed to setup replication")
+						return ctrl.Result{}, err
+					}
 				}
-				err = client.Do(ctx, client.B().ClusterAddslotsrange().StartSlotEndSlot().StartSlotEndSlot(int64(expectedSlotRange.Start), int64(existingSlotRange.End)).Build()).Error()
-				if err != nil {
-					log.Error(err, "Failed to add slot range")
-					return ctrl.Result{}, err
-				}
-
-			} else { // there is an existing slot range, so we need to reshard
 			}
 		}
 	}
