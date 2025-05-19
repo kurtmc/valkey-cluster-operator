@@ -15,6 +15,14 @@ type ClusterNode struct {
 	SlotRanges   []*ClusterSlotRange
 }
 
+func (c *ClusterNode) IsMaster() bool {
+	for _, flag := range c.Flags {
+		if flag == "master" {
+			return true
+		}
+	}
+	return false
+}
 func (c *ClusterNode) HasSlots() bool {
 	count := SlotCount(c.SlotRanges)
 	return count > 0
