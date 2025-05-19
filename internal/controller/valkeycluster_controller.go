@@ -680,6 +680,22 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 					}
 				}
 			}
+		} else {
+			for idx, cn := range clusterNodesForShard {
+				if idx == 0 {
+					continue
+				}
+				client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{cn.IP + ":6379"}, ForceSingleClient: true})
+				if err != nil {
+					log.Error(err, "Failed to get client")
+					return ctrl.Result{}, err
+				}
+				err = client.Do(ctx, client.B().ClusterReplicate().NodeId(clusterNodesForShard[0].ID).Build()).Error()
+				if err != nil {
+					log.Error(err, "Failed to setup replication")
+					return ctrl.Result{}, err
+				}
+			}
 		}
 	}
 
