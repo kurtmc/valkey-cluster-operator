@@ -287,6 +287,60 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		} else {
 			// TODO: here we are scaling down so we need to ensure we have resharded first
 		}
+
+		// Ensure requests and limits are updated
+		if found.Spec.Template.Spec.Containers[0].Resources.Requests.Cpu().Cmp(*valkeyCluster.Spec.Resources.Requests.Cpu()) == -1 {
+			if found.Spec.Template.Spec.Containers[0].Resources.Requests == nil {
+				found.Spec.Template.Spec.Containers[0].Resources.Requests = valkeyCluster.Spec.Resources.Requests
+				return ctrl.Result{Requeue: true}, nil
+			}
+			found.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU] = *valkeyCluster.Spec.Resources.Requests.Cpu()
+			err := r.Update(ctx, found)
+			if err != nil {
+				log.Error(err, "Failed to update ValkeyCluster resources")
+				return ctrl.Result{}, err
+			}
+			r.Recorder.Event(valkeyCluster, "Normal", "Updated",
+				fmt.Sprintf("StatefulSet CPU requests %s/%s is updated", found.Namespace, found.Name))
+			return ctrl.Result{Requeue: true}, nil
+		}
+		if found.Spec.Template.Spec.Containers[0].Resources.Limits.Cpu().Cmp(*valkeyCluster.Spec.Resources.Limits.Cpu()) == -1 {
+			if found.Spec.Template.Spec.Containers[0].Resources.Limits == nil {
+				found.Spec.Template.Spec.Containers[0].Resources.Limits = valkeyCluster.Spec.Resources.Limits
+				return ctrl.Result{Requeue: true}, nil
+			}
+			found.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceCPU] = *valkeyCluster.Spec.Resources.Limits.Cpu()
+			err := r.Update(ctx, found)
+			if err != nil {
+				log.Error(err, "Failed to update ValkeyCluster resources")
+				return ctrl.Result{}, err
+			}
+			r.Recorder.Event(valkeyCluster, "Normal", "Updated",
+				fmt.Sprintf("StatefulSet %s/%s CPU limit is updated", found.Namespace, found.Name))
+			return ctrl.Result{Requeue: true}, nil
+		}
+		if found.Spec.Template.Spec.Containers[0].Resources.Requests.Memory().Cmp(*valkeyCluster.Spec.Resources.Requests.Memory()) == -1 {
+			found.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory] = *valkeyCluster.Spec.Resources.Requests.Memory()
+			err := r.Update(ctx, found)
+			if err != nil {
+				log.Error(err, "Failed to update ValkeyCluster resources")
+				return ctrl.Result{}, err
+			}
+			r.Recorder.Event(valkeyCluster, "Normal", "Updated",
+				fmt.Sprintf("StatefulSet Memory requests %s/%s is updated", found.Namespace, found.Name))
+			return ctrl.Result{Requeue: true}, nil
+		}
+		if found.Spec.Template.Spec.Containers[0].Resources.Limits.Memory().Cmp(*valkeyCluster.Spec.Resources.Limits.Memory()) == -1 {
+			found.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory] = *valkeyCluster.Spec.Resources.Limits.Memory()
+			err := r.Update(ctx, found)
+			if err != nil {
+				log.Error(err, "Failed to update ValkeyCluster resources")
+				return ctrl.Result{}, err
+			}
+			r.Recorder.Event(valkeyCluster, "Normal", "Updated",
+				fmt.Sprintf("StatefulSet %s/%s Memory limit is updated", found.Namespace, found.Name))
+			return ctrl.Result{Requeue: true}, nil
+		}
 	}
 
 	// check if pvs already exist, they should be created by the statefulset
@@ -751,6 +805,8 @@ func (r *ValkeyClusterReconciler) statefulSet(name string, size int32, valkeyClu
 						Image:           image,
 						Name:            "valkey-cluster-node",
 						ImagePullPolicy: corev1.PullIfNotPresent,
+						Resources:       *valkeyCluster.Spec.Resources,
+
 						// Ensure restrictive context for the container
 						// More info: https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted
 						SecurityContext: &corev1.SecurityContext{
