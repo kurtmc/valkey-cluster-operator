@@ -51,6 +51,7 @@ rules:
   resources:
   - configmaps
   - persistentvolumeclaims
+  - pods/exec
   verbs:
   - create
   - delete

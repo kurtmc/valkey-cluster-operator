@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"fmt"
@@ -34,7 +35,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/remotecommand"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -65,8 +69,10 @@ const (
 // ValkeyClusterReconciler reconciles a ValkeyCluster object
 type ValkeyClusterReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Scheme     *runtime.Scheme
+	Recorder   record.EventRecorder
+	RestConfig *rest.Config
+	ClientSet  *kubernetes.Clientset
 }
 
 // +kubebuilder:rbac:groups=cache.example.com,resources=valkeyclusters,verbs=get;list;watch;create;update;patch;delete
@@ -77,6 +83,7 @@ type ValkeyClusterReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=pods/exec,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -610,26 +617,24 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 
 		found := false
-		expectedSlotRange := slotRanges[shardIdx]
-		var existingSlotRange *internalValkey.ClusterSlotRange
+		expectedSlotRanges := slotRanges[shardIdx]
+		var existingSlotRange []*internalValkey.ClusterSlotRange
 		for _, cn := range clusterNodesForShard {
-			if cn.SlotRange != nil {
-				log.Info(fmt.Sprintf("There is an existing slot range for shard %d: %s", shardIdx, cn.SlotRange.String()))
-				existingSlotRange = cn.SlotRange
-			}
-			if (cn.SlotRange != nil) && (cn.SlotRange.Start == expectedSlotRange.Start && cn.SlotRange.End == expectedSlotRange.End) {
+			if cn.HasSlots() {
+				log.Info(fmt.Sprintf("There is an existing slot range for shard %d: %v", shardIdx, cn.SlotRanges))
+				existingSlotRange = cn.SlotRanges
 				found = true
 			}
 		}
 		if !found {
-			log.Info(fmt.Sprintf("Expected slot range %+v for shard %d not found", expectedSlotRange, shardIdx))
+			log.Info(fmt.Sprintf("Expected slot range %+v for shard %d not found", expectedSlotRanges, shardIdx))
 			if existingSlotRange == nil { // there is not slot range to we can just assign
 				client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{clusterNodesForShard[0].IP + ":6379"}, ForceSingleClient: true})
 				if err != nil {
 					log.Error(err, "Failed to get client")
 					return ctrl.Result{}, err
 				}
-				err = client.Do(ctx, client.B().ClusterAddslotsrange().StartSlotEndSlot().StartSlotEndSlot(int64(expectedSlotRange.Start), int64(expectedSlotRange.End)).Build()).Error()
+				err = client.Do(ctx, client.B().ClusterAddslotsrange().StartSlotEndSlot().StartSlotEndSlot(int64(expectedSlotRanges.Start), int64(expectedSlotRanges.End)).Build()).Error()
 				if err != nil {
 					log.Error(err, "Failed to add slot range")
 					return ctrl.Result{}, err
@@ -656,7 +661,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 		var primary *internalValkey.ClusterNode
 		for _, cn := range clusterNodesForShard {
-			if cn.SlotRange != nil {
+			if cn.HasSlots() {
 				primary = cn
 
 			}
@@ -680,6 +685,115 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				}
 			}
 		}
+	}
+
+	// resharding when increasing shards
+	// find primary per shard and get slot count
+	primaries := []*internalValkey.ClusterNode{}
+	for shardIdx := 0; shardIdx < int(valkeyCluster.Spec.Shards); shardIdx++ {
+		clusterNodesForShard := make([]*internalValkey.ClusterNode, 0)
+		for _, cn := range clusterNodes {
+			if strings.HasPrefix(cn.Pod, fmt.Sprintf("%s-%d-", valkeyCluster.Name, shardIdx)) {
+				clusterNodesForShard = append(clusterNodesForShard, cn)
+			}
+		}
+
+		var primary *internalValkey.ClusterNode
+		for _, cn := range clusterNodesForShard {
+			if cn.HasSlots() {
+				primary = cn
+			}
+		}
+		if primary != nil {
+			primaries = append(primaries, primary)
+		}
+		if primary == nil {
+			primaries = append(primaries, clusterNodesForShard[0])
+		}
+	}
+
+	desiredSlotCounts := internalValkey.SlotCounts(int(valkeyCluster.Spec.Shards))
+	actualSlotCounts := []int{}
+	for _, p := range primaries {
+		actualSlotCounts = append(actualSlotCounts, p.SlotCount())
+	}
+
+	actionPlan := []internalValkey.Reshard{}
+	rid := map[string]int{}
+	receive := map[string]int{}
+	for i := range actualSlotCounts {
+		if actualSlotCounts[i] == desiredSlotCounts[i] {
+			//all is well
+		} else if actualSlotCounts[i] > desiredSlotCounts[i] {
+			// need to get rid of:
+			delta := actualSlotCounts[i] - desiredSlotCounts[i]
+			rid[primaries[i].ID] = delta
+
+		} else if actualSlotCounts[i] < desiredSlotCounts[i] {
+			// need to get:
+			delta := desiredSlotCounts[i] - actualSlotCounts[i]
+			receive[primaries[i].ID] = delta
+		}
+	}
+
+	for fromID, ridSlots := range rid {
+		if ridSlots == 0 {
+			continue
+		}
+		for toID, receiveSlots := range receive {
+			if receiveSlots <= ridSlots {
+				actionPlan = append(actionPlan, internalValkey.Reshard{
+					FromID: fromID,
+					ToID:   toID,
+					Slots:  receiveSlots,
+				})
+				rid[fromID] = rid[fromID] - receiveSlots
+			} else {
+				actionPlan = append(actionPlan, internalValkey.Reshard{
+					FromID: fromID,
+					ToID:   toID,
+					Slots:  ridSlots,
+				})
+				rid[fromID] = 0
+			}
+		}
+	}
+
+	for _, plan := range actionPlan {
+		// valkey-cli --cluster reshard 127.0.0.1:6379 --cluster-from 530e79a7306c62ce8edd1d1fd23ceb42f0b76529 --cluster-to c46b0932f83ee1fcf139397688421f3f2845af61 --cluster-slots 1 --cluster-yes
+		cmd := []string{
+			"sh",
+			"-c",
+			fmt.Sprintf("valkey-cli --cluster reshard 127.0.0.1:6379 --cluster-from %s --cluster-to %s --cluster-slots %d --cluster-yes", plan.FromID, plan.ToID, plan.Slots),
+		}
+
+		podName := fmt.Sprintf("%s-0-0", valkeyCluster.Name)
+
+		req := r.ClientSet.CoreV1().RESTClient().Post().Resource("pods").Name(podName).
+			Namespace(valkeyCluster.Namespace).SubResource("exec")
+		req.VersionedParams(&corev1.PodExecOptions{
+			Container: "valkey",
+			Command:   cmd,
+			Stdin:     false,
+			Stdout:    true,
+			Stderr:    true,
+			TTY:       false,
+		}, runtime.NewParameterCodec(r.Scheme))
+		exec, err := remotecommand.NewSPDYExecutor(r.RestConfig, "POST", req.URL())
+		if err != nil {
+			log.Error(err, "Failed to reshard")
+			return ctrl.Result{}, err
+		}
+		var stdout, stderr bytes.Buffer
+		err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+			Stdout: &stdout,
+			Stderr: &stderr,
+		})
+		if err != nil {
+			log.Error(err, fmt.Sprintf("Failed executing command: %s %s", stdout.String(), stderr.String()))
+			return ctrl.Result{}, err
+		}
+
 	}
 
 	return ctrl.Result{}, nil
@@ -736,7 +850,7 @@ func updateClusterNodes(valkeyCluster *cachev1alpha1.ValkeyCluster, clusterNodes
 			IP:           clusterNode.IP,
 			ID:           clusterNode.ID,
 			MasterNodeID: clusterNode.MasterNodeID,
-			SlotRange:    clusterNode.SlotRange.String(),
+			SlotRange:    fmt.Sprintf("%v", clusterNode.SlotRanges),
 			Flags:        clusterNode.Flags,
 		})
 	}
@@ -744,6 +858,12 @@ func updateClusterNodes(valkeyCluster *cachev1alpha1.ValkeyCluster, clusterNodes
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ValkeyClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	var err error
+	r.ClientSet, err = kubernetes.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		return err
+	}
+	r.RestConfig = mgr.GetConfig()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&cachev1alpha1.ValkeyCluster{}).
 		Owns(&appsv1.StatefulSet{}).

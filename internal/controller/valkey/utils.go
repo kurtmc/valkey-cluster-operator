@@ -15,6 +15,14 @@ type ClusterNode struct {
 	SlotRanges   []*ClusterSlotRange
 }
 
+func (c *ClusterNode) HasSlots() bool {
+	count := SlotCount(c.SlotRanges)
+	return count > 0
+}
+func (c *ClusterNode) SlotCount() int {
+	return SlotCount(c.SlotRanges)
+}
+
 func parseClusterNodeLine(line string) (*ClusterNode, error) {
 	strings.Fields(line)
 	fields := strings.Fields(line)
@@ -130,7 +138,7 @@ func (c *ClusterSlotRange) String() string {
 	return fmt.Sprintf("%d-%d", c.Start, c.End)
 }
 
-func SlotRanges(numShards int) []ClusterSlotRange {
+func SlotRanges(numShards int) []*ClusterSlotRange {
 	hashSlots := 16384
 	if numShards < 1 {
 		return nil
@@ -138,14 +146,14 @@ func SlotRanges(numShards int) []ClusterSlotRange {
 
 	perGroup := hashSlots / numShards
 
-	result := make([]ClusterSlotRange, 0)
+	result := make([]*ClusterSlotRange, 0)
 	j := 0
 	for i := 0; i < numShards; i++ {
 		if i == numShards-1 {
-			result = append(result, ClusterSlotRange{Start: j, End: 16383})
+			result = append(result, &ClusterSlotRange{Start: j, End: 16383})
 			return result
 		}
-		result = append(result, ClusterSlotRange{Start: j, End: j + perGroup - 1})
+		result = append(result, &ClusterSlotRange{Start: j, End: j + perGroup - 1})
 		j = j + perGroup
 	}
 	return result
@@ -158,4 +166,18 @@ func SlotCounts(numShards int) []int {
 		counts = append(counts, (r.End-r.Start)+1)
 	}
 	return counts
+}
+
+func SlotCount(slotRanges []*ClusterSlotRange) int {
+	sum := 0
+	for _, slotRange := range slotRanges {
+		sum = sum + (slotRange.End - slotRange.Start) + 1
+	}
+	return sum
+}
+
+type Reshard struct {
+	FromID string
+	ToID   string
+	Slots  int
 }
