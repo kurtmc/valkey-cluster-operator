@@ -531,7 +531,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		var existingSlotRange *internalValkey.ClusterSlotRange
 		for _, cn := range clusterNodesForShard {
 			if cn.SlotRange != nil {
-				log.Info("There is an existing slot range for shard %d: %s", shardIdx, existingSlotRange)
+				log.Info(fmt.Sprintf("There is an existing slot range for shard %d: %s", shardIdx, existingSlotRange))
 				existingSlotRange = cn.SlotRange
 			}
 			if cn.SlotRange.Start == expectedSlotRange.Start && cn.SlotRange.End == expectedSlotRange.End {
@@ -539,7 +539,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			}
 		}
 		if !found {
-			log.Info("Expected slot range %s for shard %d not found", expectedSlotRange, shardIdx)
+			log.Info(fmt.Sprintf("Expected slot range %s for shard %d not found", expectedSlotRange, shardIdx))
 			if existingSlotRange == nil { // there is not slot range to we can just assign
 				client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{clusterNodesForShard[0].IP + ":6379"}, ForceSingleClient: true})
 				if err != nil {
