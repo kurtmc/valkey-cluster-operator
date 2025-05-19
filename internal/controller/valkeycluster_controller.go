@@ -204,15 +204,15 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		log.Error(err, "Failed to upsert configmap")
 		return ctrl.Result{}, err
 	}
+	log.Info("configmap updated")
 
 	// Check if the statefulset already exists, if not create a new one
 	for stsIdx := 0; stsIdx < int(valkeyCluster.Spec.Shards); stsIdx++ {
 		found := &appsv1.StatefulSet{}
-
 		stsName := fmt.Sprintf("%s-%d", valkeyCluster.Name, stsIdx)
-
 		err = r.Get(ctx, types.NamespacedName{Name: stsName, Namespace: valkeyCluster.Namespace}, found)
 		if err != nil && apierrors.IsNotFound(err) {
+			log.Info(fmt.Sprintf("StatefulSet %s not found", stsName))
 			// Define a new statefulset
 			sts, err := r.statefulSet(stsName, valkeyCluster.Spec.Shards+valkeyCluster.Spec.Replicas, valkeyCluster)
 			if err != nil {
@@ -253,6 +253,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 		// We can simply increase the number of replicas if we are scaling up
 		if *found.Spec.Replicas != (valkeyCluster.Spec.Shards+valkeyCluster.Spec.Replicas) && *found.Spec.Replicas < (valkeyCluster.Spec.Shards+valkeyCluster.Spec.Replicas) {
+			log.Info(fmt.Sprintf("StatefulSet needs to increase replicas from %d to %d", *found.Spec.Replicas, (valkeyCluster.Spec.Shards + valkeyCluster.Spec.Replicas)))
 			found.Spec.Replicas = &[]int32{(valkeyCluster.Spec.Shards + valkeyCluster.Spec.Replicas)}[0]
 			if err = r.Update(ctx, found); err != nil {
 				log.Error(err, "Failed to update StatefulSet",
@@ -280,6 +281,8 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				return ctrl.Result{}, err
 			}
 
+			log.Info("StatefulSet replicas updated")
+
 			// Now, that we update the size we want to requeue the reconciliation
 			// so that we can ensure that we have the latest state of the resource before
 			// update. Also, it will help ensure the desired state on the cluster
@@ -288,59 +291,85 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			// TODO: here we are scaling down so we need to ensure we have resharded first
 		}
 
-		// Ensure requests and limits are updated
-		if found.Spec.Template.Spec.Containers[0].Resources.Requests.Cpu().Cmp(*valkeyCluster.Spec.Resources.Requests.Cpu()) == -1 {
-			if found.Spec.Template.Spec.Containers[0].Resources.Requests == nil {
-				found.Spec.Template.Spec.Containers[0].Resources.Requests = valkeyCluster.Spec.Resources.Requests
+		foundResources := found.Spec.Template.Spec.Containers[0].Resources
+		log.Info(fmt.Sprintf("StatefulSet resources: %v", foundResources))
+
+		foundRequests := foundResources.Requests
+		if foundRequests == nil {
+			found.Spec.Template.Spec.Containers[0].Resources.Requests = valkeyCluster.Spec.Resources.Requests
+			err := r.Update(ctx, found)
+			if err != nil {
+				log.Error(err, "Failed to update ValkeyCluster resource requests")
+				return ctrl.Result{}, err
+			}
+			r.Recorder.Event(valkeyCluster, "Normal", "Updated",
+				fmt.Sprintf("StatefulSet resources requests %s/%s is updated", found.Namespace, found.Name))
+			return ctrl.Result{Requeue: true}, nil
+		} else {
+			// scaling up
+			if foundRequests.Cpu().Cmp(*valkeyCluster.Spec.Resources.Requests.Cpu()) == -1 {
+				found.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU] = *valkeyCluster.Spec.Resources.Requests.Cpu()
+				err := r.Update(ctx, found)
+				if err != nil {
+					log.Error(err, "Failed to update ValkeyCluster resources")
+					return ctrl.Result{}, err
+				}
+				r.Recorder.Event(valkeyCluster, "Normal", "Updated",
+					fmt.Sprintf("StatefulSet CPU requests %s/%s is updated", found.Namespace, found.Name))
 				return ctrl.Result{Requeue: true}, nil
 			}
-			found.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceCPU] = *valkeyCluster.Spec.Resources.Requests.Cpu()
-			err := r.Update(ctx, found)
-			if err != nil {
-				log.Error(err, "Failed to update ValkeyCluster resources")
-				return ctrl.Result{}, err
-			}
-			r.Recorder.Event(valkeyCluster, "Normal", "Updated",
-				fmt.Sprintf("StatefulSet CPU requests %s/%s is updated", found.Namespace, found.Name))
-			return ctrl.Result{Requeue: true}, nil
-		}
-		if found.Spec.Template.Spec.Containers[0].Resources.Limits.Cpu().Cmp(*valkeyCluster.Spec.Resources.Limits.Cpu()) == -1 {
-			if found.Spec.Template.Spec.Containers[0].Resources.Limits == nil {
-				found.Spec.Template.Spec.Containers[0].Resources.Limits = valkeyCluster.Spec.Resources.Limits
+			// scaling up
+			if foundRequests.Memory().Cmp(*valkeyCluster.Spec.Resources.Requests.Memory()) == -1 {
+				found.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory] = *valkeyCluster.Spec.Resources.Requests.Memory()
+				err := r.Update(ctx, found)
+				if err != nil {
+					log.Error(err, "Failed to update ValkeyCluster resources")
+					return ctrl.Result{}, err
+				}
+				r.Recorder.Event(valkeyCluster, "Normal", "Updated",
+					fmt.Sprintf("StatefulSet Memory requests %s/%s is updated", found.Namespace, found.Name))
 				return ctrl.Result{Requeue: true}, nil
 			}
-			found.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceCPU] = *valkeyCluster.Spec.Resources.Limits.Cpu()
+		}
+
+		foundLimits := foundResources.Limits
+		if foundLimits == nil {
+			found.Spec.Template.Spec.Containers[0].Resources.Limits = valkeyCluster.Spec.Resources.Limits
 			err := r.Update(ctx, found)
 			if err != nil {
-				log.Error(err, "Failed to update ValkeyCluster resources")
+				log.Error(err, "Failed to update ValkeyCluster resource limits")
 				return ctrl.Result{}, err
 			}
 			r.Recorder.Event(valkeyCluster, "Normal", "Updated",
-				fmt.Sprintf("StatefulSet %s/%s CPU limit is updated", found.Namespace, found.Name))
+				fmt.Sprintf("StatefulSet resources limits %s/%s is updated", found.Namespace, found.Name))
 			return ctrl.Result{Requeue: true}, nil
-		}
-		if found.Spec.Template.Spec.Containers[0].Resources.Requests.Memory().Cmp(*valkeyCluster.Spec.Resources.Requests.Memory()) == -1 {
-			found.Spec.Template.Spec.Containers[0].Resources.Requests[corev1.ResourceMemory] = *valkeyCluster.Spec.Resources.Requests.Memory()
-			err := r.Update(ctx, found)
-			if err != nil {
-				log.Error(err, "Failed to update ValkeyCluster resources")
-				return ctrl.Result{}, err
+		} else {
+			// scaling up
+			if foundLimits.Cpu().Cmp(*valkeyCluster.Spec.Resources.Limits.Cpu()) == -1 {
+				found.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceCPU] = *valkeyCluster.Spec.Resources.Limits.Cpu()
+				err := r.Update(ctx, found)
+				if err != nil {
+					log.Error(err, "Failed to update ValkeyCluster resources")
+					return ctrl.Result{}, err
+				}
+				r.Recorder.Event(valkeyCluster, "Normal", "Updated",
+					fmt.Sprintf("StatefulSet CPU limits %s/%s is updated", found.Namespace, found.Name))
+				return ctrl.Result{Requeue: true}, nil
 			}
-			r.Recorder.Event(valkeyCluster, "Normal", "Updated",
-				fmt.Sprintf("StatefulSet Memory requests %s/%s is updated", found.Namespace, found.Name))
-			return ctrl.Result{Requeue: true}, nil
-		}
-		if found.Spec.Template.Spec.Containers[0].Resources.Limits.Memory().Cmp(*valkeyCluster.Spec.Resources.Limits.Memory()) == -1 {
-			found.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory] = *valkeyCluster.Spec.Resources.Limits.Memory()
-			err := r.Update(ctx, found)
-			if err != nil {
-				log.Error(err, "Failed to update ValkeyCluster resources")
-				return ctrl.Result{}, err
+			// scaling up
+			if foundLimits.Memory().Cmp(*valkeyCluster.Spec.Resources.Limits.Memory()) == -1 {
+				found.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceMemory] = *valkeyCluster.Spec.Resources.Limits.Memory()
+				err := r.Update(ctx, found)
+				if err != nil {
+					log.Error(err, "Failed to update ValkeyCluster resources")
+					return ctrl.Result{}, err
+				}
+				r.Recorder.Event(valkeyCluster, "Normal", "Updated",
+					fmt.Sprintf("StatefulSet Memory limits %s/%s is updated", found.Namespace, found.Name))
+				return ctrl.Result{Requeue: true}, nil
 			}
-			r.Recorder.Event(valkeyCluster, "Normal", "Updated",
-				fmt.Sprintf("StatefulSet %s/%s Memory limit is updated", found.Namespace, found.Name))
-			return ctrl.Result{Requeue: true}, nil
 		}
+
 	}
 
 	// check if pvs already exist, they should be created by the statefulset
