@@ -30,7 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -510,6 +509,99 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
+	clusterNodes, err = r.buildClusterNodes(ctx, valkeyCluster)
+	if err != nil {
+		log.Error(err, "Failed to get cluster nodes")
+		return ctrl.Result{}, err
+	}
+
+	// There are 16384 hash slots in Valkey Cluster, and to compute the hash slot for a given key, we simply take the CRC16 of the key modulo 16384.
+	// 0-16383
+	slotRanges := internalValkey.SlotRanges(int(valkeyCluster.Spec.Shards))
+	for shardIdx := 0; shardIdx < int(valkeyCluster.Spec.Shards); shardIdx++ {
+		clusterNodesForShard := make([]*internalValkey.ClusterNode, 0)
+		for _, cn := range clusterNodes {
+			if strings.HasPrefix(cn.Pod, fmt.Sprintf("%s-%d-", valkeyCluster.Name, shardIdx)) {
+				clusterNodesForShard = append(clusterNodesForShard, cn)
+			}
+		}
+
+		found := false
+		expectedSlotRange := slotRanges[shardIdx]
+		var existingSlotRange *internalValkey.ClusterSlotRange
+		for _, cn := range clusterNodesForShard {
+			if cn.SlotRange != nil {
+				log.Info("There is an existing slot range for shard %d: %s", shardIdx, existingSlotRange)
+				existingSlotRange = cn.SlotRange
+			}
+			if cn.SlotRange.Start == expectedSlotRange.Start && cn.SlotRange.End == expectedSlotRange.End {
+				found = true
+			}
+		}
+		if !found {
+			log.Info("Expected slot range %s for shard %d not found", expectedSlotRange, shardIdx)
+			if existingSlotRange == nil { // there is not slot range to we can just assign
+				client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{clusterNodesForShard[0].IP + ":6379"}, ForceSingleClient: true})
+				if err != nil {
+					log.Error(err, "Failed to get client")
+					return ctrl.Result{}, err
+				}
+				err = client.Do(ctx, client.B().ClusterAddslotsrange().StartSlotEndSlot().StartSlotEndSlot(int64(expectedSlotRange.Start), int64(existingSlotRange.End)).Build()).Error()
+				if err != nil {
+					log.Error(err, "Failed to add slot range")
+					return ctrl.Result{}, err
+				}
+
+			} else { // there is an existing slot range, so we need to reshard
+			}
+		}
+	}
+
+	// setup replication
+	clusterNodes, err = r.buildClusterNodes(ctx, valkeyCluster)
+	if err != nil {
+		log.Error(err, "Failed to get cluster nodes")
+		return ctrl.Result{}, err
+	}
+	for shardIdx := 0; shardIdx < int(valkeyCluster.Spec.Shards); shardIdx++ {
+		clusterNodesForShard := make([]*internalValkey.ClusterNode, 0)
+		for _, cn := range clusterNodes {
+			if strings.HasPrefix(cn.Pod, fmt.Sprintf("%s-%d-", valkeyCluster.Name, shardIdx)) {
+				clusterNodesForShard = append(clusterNodesForShard, cn)
+			}
+		}
+
+		found := false
+		expectedSlotRange := slotRanges[shardIdx]
+		var existingSlotRange *internalValkey.ClusterSlotRange
+		for _, cn := range clusterNodesForShard {
+			if cn.SlotRange != nil {
+				log.Info(fmt.Sprintf("There is an existing slot range for shard %d: %s", shardIdx, existingSlotRange))
+				existingSlotRange = cn.SlotRange
+			}
+			if cn.SlotRange.Start == expectedSlotRange.Start && cn.SlotRange.End == expectedSlotRange.End {
+				found = true
+			}
+		}
+		if !found {
+			log.Info(fmt.Sprintf("Expected slot range %s for shard %d not found", expectedSlotRange, shardIdx))
+			if existingSlotRange == nil { // there is not slot range to we can just assign
+				client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{clusterNodesForShard[0].IP + ":6379"}, ForceSingleClient: true})
+				if err != nil {
+					log.Error(err, "Failed to get client")
+					return ctrl.Result{}, err
+				}
+				err = client.Do(ctx, client.B().ClusterAddslotsrange().StartSlotEndSlot().StartSlotEndSlot(int64(expectedSlotRange.Start), int64(existingSlotRange.End)).Build()).Error()
+				if err != nil {
+					log.Error(err, "Failed to add slot range")
+					return ctrl.Result{}, err
+				}
+
+			} else { // there is an existing slot range, so we need to reshard
+			}
+		}
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -564,7 +656,7 @@ func updateClusterNodes(valkeyCluster *cachev1alpha1.ValkeyCluster, clusterNodes
 			IP:           clusterNode.IP,
 			ID:           clusterNode.ID,
 			MasterNodeID: clusterNode.MasterNodeID,
-			SlotRange:    clusterNode.SlotRange,
+			SlotRange:    clusterNode.SlotRange.String(),
 			Flags:        clusterNode.Flags,
 		})
 	}
