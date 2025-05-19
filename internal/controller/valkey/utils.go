@@ -48,15 +48,19 @@ func parseClusterNodeLine(line string) (*ClusterNode, error) {
 	slotRanges := make([]*ClusterSlotRange, 0)
 	if len(fields) > 8 {
 		for i := 8; i < len(fields); i++ {
+			// skip slot migration
+			if strings.HasPrefix(fields[i], "[") {
+				continue
+			}
 			if strings.Contains(fields[i], "-") {
 				parts := strings.Split(fields[i], "-")
 				start, err := strconv.Atoi(parts[0])
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("failed to convert string %v: line: %s", err, line)
 				}
 				end, err := strconv.Atoi(parts[1])
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("failed to convert string %v: line: %s", err, line)
 				}
 				slotRange := &ClusterSlotRange{
 					Start: start,
@@ -66,7 +70,7 @@ func parseClusterNodeLine(line string) (*ClusterNode, error) {
 			} else {
 				start, err := strconv.Atoi(fields[i])
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("failed to convert string %v: line: %s", err, line)
 				}
 				end := start
 				slotRange := &ClusterSlotRange{
