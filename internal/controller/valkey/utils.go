@@ -12,7 +12,7 @@ type ClusterNode struct {
 	ID           string
 	MasterNodeID string
 	Flags        []string
-	SlotRange    *ClusterSlotRange
+	SlotRanges   []*ClusterSlotRange
 }
 
 func parseClusterNodeLine(line string) (*ClusterNode, error) {
@@ -29,23 +29,37 @@ func parseClusterNodeLine(line string) (*ClusterNode, error) {
 			flagsWithoutMyself = append(flagsWithoutMyself, flag)
 		}
 	}
-	var slotRange *ClusterSlotRange
+	slotRanges := make([]*ClusterSlotRange, 0)
 	if len(fields) > 8 {
-		parts := strings.Split(fields[8], "-")
-
-		start, err := strconv.Atoi(parts[0])
-		if err != nil {
-			return nil, err
+		for i := 8; i < len(fields); i++ {
+			if strings.Contains(fields[i], "-") {
+				parts := strings.Split(fields[i], "-")
+				start, err := strconv.Atoi(parts[0])
+				if err != nil {
+					return nil, err
+				}
+				end, err := strconv.Atoi(parts[1])
+				if err != nil {
+					return nil, err
+				}
+				slotRange := &ClusterSlotRange{
+					Start: start,
+					End:   end,
+				}
+				slotRanges = append(slotRanges, slotRange)
+			} else {
+				start, err := strconv.Atoi(fields[i])
+				if err != nil {
+					return nil, err
+				}
+				end := start
+				slotRange := &ClusterSlotRange{
+					Start: start,
+					End:   end,
+				}
+				slotRanges = append(slotRanges, slotRange)
+			}
 		}
-		end, err := strconv.Atoi(parts[1])
-		if err != nil {
-			return nil, err
-		}
-		slotRange = &ClusterSlotRange{
-			Start: start,
-			End:   end,
-		}
-
 	}
 	IP := strings.Split(fields[1], ":")[0]
 	ID := strings.ReplaceAll(fields[0], "txt:", "")
@@ -58,8 +72,20 @@ func parseClusterNodeLine(line string) (*ClusterNode, error) {
 		ID:           ID,
 		MasterNodeID: MasterNodeID,
 		Flags:        flagsWithoutMyself,
-		SlotRange:    slotRange,
+		SlotRanges:   slotRanges,
 	}, nil
+}
+
+func ParseClusterNodes(clusterNodesTxt string) ([]*ClusterNode, error) {
+	result := make([]*ClusterNode, 0)
+	for _, line := range strings.Split(clusterNodesTxt, "\n") {
+		clusterNode, err := parseClusterNodeLine(line)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, clusterNode)
+	}
+	return result, nil
 }
 
 func ParseClusterNode(clusterNodesTxt string) (*ClusterNode, error) {
@@ -123,4 +149,13 @@ func SlotRanges(numShards int) []ClusterSlotRange {
 		j = j + perGroup
 	}
 	return result
+}
+
+func SlotCounts(numShards int) []int {
+	ranges := SlotRanges(numShards)
+	counts := make([]int, 0)
+	for _, r := range ranges {
+		counts = append(counts, (r.End-r.Start)+1)
+	}
+	return counts
 }

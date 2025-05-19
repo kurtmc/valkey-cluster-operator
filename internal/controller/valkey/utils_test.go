@@ -2,6 +2,7 @@ package valkey
 
 import (
 	"fmt"
+	"github.com/stretchr/testify/assert"
 	"testing"
 )
 
@@ -34,4 +35,142 @@ func TestSlotRanges(t *testing.T) {
 		})
 	}
 
+}
+
+func TestParsing(t *testing.T) {
+	testcases := []struct {
+		in  string
+		out []*ClusterNode
+	}{
+		{`2ce359297f259ff422218053d9c38e8eee5ac3f6 10.9.15.190:6379@16379 slave 530e79a7306c62ce8edd1d1fd23ceb42f0b76529 0 1747631314000 1 connected
+530e79a7306c62ce8edd1d1fd23ceb42f0b76529 10.9.0.118:6379@16379 master - 0 1747631314884 1 connected 8293-16383
+552b84fa4644cdb3dd963462378dc3805568c2ae 10.9.22.221:6379@16379 slave fd5a39e1e47b38d0cfabc11388fd7230c2c0f183 0 1747631315388 0 connected
+fd5a39e1e47b38d0cfabc11388fd7230c2c0f183 10.9.8.19:6379@16379 myself,master - 0 0 0 connected 101-8191
+2fdd77393718a4162f1f11021139e7580914c3a6 10.9.4.229:6379@16379 slave 530e79a7306c62ce8edd1d1fd23ceb42f0b76529 0 1747631315086 1 connected
+5fc914131d5e1b2cce9023dd204cc502de166d61 10.9.15.208:6379@16379 slave c46b0932f83ee1fcf139397688421f3f2845af61 0 1747631315588 7 connected
+c46b0932f83ee1fcf139397688421f3f2845af61 10.9.22.107:6379@16379 master - 0 1747631314000 7 connected 0-100 8192-8292
+0d8fc1b8d1fa42654d977a1851d92835ab4250e3 10.9.23.215:6379@16379 slave fd5a39e1e47b38d0cfabc11388fd7230c2c0f183 0 1747631314382 0 connected
+64c28a06b360d40fc811eee290fd874fe08a140e 10.9.22.17:6379@16379 slave c46b0932f83ee1fcf139397688421f3f2845af61 0 1747631315000 7 connected`, []*ClusterNode{
+			{
+				IP:           "10.9.15.190",
+				ID:           "2ce359297f259ff422218053d9c38e8eee5ac3f6",
+				MasterNodeID: "530e79a7306c62ce8edd1d1fd23ceb42f0b76529",
+				Flags:        []string{"slave"},
+				SlotRanges:   []*ClusterSlotRange{},
+			},
+			{
+				IP:           "10.9.0.118",
+				ID:           "530e79a7306c62ce8edd1d1fd23ceb42f0b76529",
+				MasterNodeID: "",
+				Flags:        []string{"master"},
+				SlotRanges:   []*ClusterSlotRange{{Start: 8293, End: 16383}},
+			},
+			{
+				IP:           "10.9.22.221",
+				ID:           "552b84fa4644cdb3dd963462378dc3805568c2ae",
+				MasterNodeID: "fd5a39e1e47b38d0cfabc11388fd7230c2c0f183",
+				Flags:        []string{"slave"},
+				SlotRanges:   []*ClusterSlotRange{},
+			},
+			{
+				IP:           "10.9.8.19",
+				ID:           "fd5a39e1e47b38d0cfabc11388fd7230c2c0f183",
+				MasterNodeID: "",
+				Flags:        []string{"master"},
+				SlotRanges:   []*ClusterSlotRange{&ClusterSlotRange{Start: 101, End: 8191}},
+			},
+			{
+				IP:           "10.9.4.229",
+				ID:           "2fdd77393718a4162f1f11021139e7580914c3a6",
+				MasterNodeID: "530e79a7306c62ce8edd1d1fd23ceb42f0b76529",
+				Flags:        []string{"slave"},
+				SlotRanges:   []*ClusterSlotRange{},
+			},
+			{
+				IP:           "10.9.15.208",
+				ID:           "5fc914131d5e1b2cce9023dd204cc502de166d61",
+				MasterNodeID: "c46b0932f83ee1fcf139397688421f3f2845af61",
+				Flags:        []string{"slave"},
+				SlotRanges:   []*ClusterSlotRange{},
+			},
+			{
+				IP:           "10.9.22.107",
+				ID:           "c46b0932f83ee1fcf139397688421f3f2845af61",
+				MasterNodeID: "",
+				Flags:        []string{"master"},
+				SlotRanges:   []*ClusterSlotRange{&ClusterSlotRange{Start: 0, End: 100}, &ClusterSlotRange{Start: 8192, End: 8292}},
+			},
+			{
+				IP:           "10.9.23.215",
+				ID:           "0d8fc1b8d1fa42654d977a1851d92835ab4250e3",
+				MasterNodeID: "fd5a39e1e47b38d0cfabc11388fd7230c2c0f183",
+				Flags:        []string{"slave"},
+				SlotRanges:   []*ClusterSlotRange{},
+			},
+			{
+				IP:           "10.9.22.17",
+				ID:           "64c28a06b360d40fc811eee290fd874fe08a140e",
+				MasterNodeID: "c46b0932f83ee1fcf139397688421f3f2845af61",
+				Flags:        []string{"slave"},
+				SlotRanges:   []*ClusterSlotRange{},
+			},
+		}},
+		{`530e79a7306c62ce8edd1d1fd23ceb42f0b76529 10.9.0.118:6379@16379 master - 0 1747631314884 1 connected 8293-16383 1 3
+64c28a06b360d40fc811eee290fd874fe08a140e 10.9.22.17:6379@16379 slave c46b0932f83ee1fcf139397688421f3f2845af61 0 1747631315000 7 connected`, []*ClusterNode{
+			{
+				IP:           "10.9.0.118",
+				ID:           "530e79a7306c62ce8edd1d1fd23ceb42f0b76529",
+				MasterNodeID: "",
+				Flags:        []string{"master"},
+				SlotRanges:   []*ClusterSlotRange{{Start: 8293, End: 16383}, {Start: 1, End: 1}, {Start: 3, End: 3}},
+			},
+			{
+				IP:           "10.9.22.17",
+				ID:           "64c28a06b360d40fc811eee290fd874fe08a140e",
+				MasterNodeID: "c46b0932f83ee1fcf139397688421f3f2845af61",
+				Flags:        []string{"slave"},
+				SlotRanges:   []*ClusterSlotRange{},
+			},
+		}},
+	}
+	for _, tt := range testcases {
+		actual, err := ParseClusterNodes(tt.in)
+		if err != nil {
+			t.Fatalf("err not expected: %v", err)
+		}
+		for i, e := range tt.out {
+			if actual[i].IP != e.IP {
+				t.Errorf("%d: expected actual[i].IP == e.IP  but got %s != %s", i, actual[i].IP, e.IP)
+			}
+			if actual[i].ID != e.ID {
+				t.Errorf("%d: expected actual[i].ID == e.ID  but got %s != %s", i, actual[i].ID, e.ID)
+			}
+			if actual[i].MasterNodeID != e.MasterNodeID {
+				t.Errorf("%d: expected actual[i].MasterNodeID == e.MasterNodeID  but got %s != %s", i, actual[i].MasterNodeID, e.MasterNodeID)
+			}
+			if actual[i].IP != e.IP {
+				t.Errorf("%d: expected actual[i].IP == e.IP  but got %s != %s", i, actual[i].IP, e.IP)
+			}
+			if len(e.Flags) != len(actual[i].Flags) {
+				t.Errorf("%d: expected len(e.Flags) == len(actual[i].Flags) but got %d != %d", i, len(e.Flags), len(actual[i].Flags))
+			}
+			for j, flag := range e.Flags {
+				if flag != actual[i].Flags[j] {
+					t.Errorf("%d: expected %s but got %s", i, flag, actual[i].Flags[j])
+				}
+			}
+			if e.SlotRanges != nil && actual[i].SlotRanges == nil {
+				t.Errorf("%d: expected e.SlotRanges != nil and actual[i].SlotRanges != nil  but got  actual[i].SlotRanges == %v", i, actual[i].SlotRanges)
+			}
+			if e.SlotRanges == nil && actual[i].SlotRanges != nil {
+				t.Errorf("%d: expected e.SlotRanges == nil and actual[i].SlotRanges == nil  but got actual[i].SlotRanges == %v", i, actual[i].SlotRanges)
+			}
+			if actual[i].SlotRanges != nil && e.SlotRanges != nil {
+				if len(e.SlotRanges) != len(actual[i].SlotRanges) {
+					t.Fatalf("%d: expected len(e.SlotRanges) != len(actual[i].SlotRanges) but got %d != %d", i, len(e.SlotRanges), len(actual[i].SlotRanges))
+				}
+				assert.Equal(t, e.SlotRanges, actual[i].SlotRanges)
+			}
+		}
+	}
 }
