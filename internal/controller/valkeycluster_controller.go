@@ -214,7 +214,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if err != nil && apierrors.IsNotFound(err) {
 			log.Info(fmt.Sprintf("StatefulSet %s not found", stsName))
 			// Define a new statefulset
-			sts, err := r.statefulSet(stsName, 1+valkeyCluster.Spec.Replicas, valkeyCluster)
+			sts, err := r.statefulSet(stsName, statefulSetSize(valkeyCluster), valkeyCluster)
 			if err != nil {
 				log.Error(err, "Failed to define new StatefulSet resource for ValkeyCluster")
 
@@ -252,9 +252,9 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 
 		// We can simply increase the number of replicas if we are scaling up
-		if *found.Spec.Replicas != (1+valkeyCluster.Spec.Replicas) && *found.Spec.Replicas < (1+valkeyCluster.Spec.Replicas) {
+		if *found.Spec.Replicas != (statefulSetSize(valkeyCluster)) && *found.Spec.Replicas < (statefulSetSize(valkeyCluster)) {
 			log.Info(fmt.Sprintf("StatefulSet needs to increase replicas from %d to %d", *found.Spec.Replicas, (valkeyCluster.Spec.Shards + valkeyCluster.Spec.Replicas)))
-			found.Spec.Replicas = &[]int32{(valkeyCluster.Spec.Shards + valkeyCluster.Spec.Replicas)}[0]
+			found.Spec.Replicas = &[]int32{(statefulSetSize(valkeyCluster))}[0]
 			if err = r.Update(ctx, found); err != nil {
 				log.Error(err, "Failed to update StatefulSet",
 					"StatefulSet.Namespace", found.Namespace, "StatefulSet.Name", found.Name)
@@ -374,7 +374,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// check if pvs already exist, they should be created by the statefulset
 	for stsIdx := 0; stsIdx < int(valkeyCluster.Spec.Shards); stsIdx++ {
-		for pvcIdx := 0; pvcIdx < int(valkeyCluster.Spec.Shards+valkeyCluster.Spec.Replicas); pvcIdx++ {
+		for pvcIdx := 0; pvcIdx < int(statefulSetSize(valkeyCluster)); pvcIdx++ {
 			pvcName := fmt.Sprintf("valkey-data-%s-%d-%d", valkeyCluster.Name, stsIdx, pvcIdx)
 			found := &corev1.PersistentVolumeClaim{}
 			err = r.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: valkeyCluster.Namespace}, found)
@@ -498,8 +498,8 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// there should be the correct number of cluster nodes now
-	if len(clusterNodes) != int(statefulSetSizeForValkeyCluster(valkeyCluster)) {
-		err := fmt.Errorf("Number of clusterNodes (%d) != number of expected pods (%d)", len(clusterNodes), int(statefulSetSizeForValkeyCluster(valkeyCluster)))
+	if len(clusterNodes) != int(valkeyCluster.Spec.Shards*statefulSetSize(valkeyCluster)) {
+		err := fmt.Errorf("Number of clusterNodes (%d) != number of expected pods (%d)", len(clusterNodes), int(valkeyCluster.Spec.Shards*statefulSetSize(valkeyCluster)))
 		return ctrl.Result{}, err
 	}
 
@@ -771,10 +771,6 @@ func (r *ValkeyClusterReconciler) doFinalizerOperationsForValkeyCluster(cr *cach
 			cr.Namespace))
 }
 
-func statefulSetSizeForValkeyCluster(valkeyCluster *cachev1alpha1.ValkeyCluster) int32 {
-	return valkeyCluster.Spec.Shards + valkeyCluster.Spec.Shards*valkeyCluster.Spec.Shards*valkeyCluster.Spec.Replicas
-}
-
 // persistentVolumeClaim returns a ValkeyCluster PVC object
 func (r *ValkeyClusterReconciler) persistentVolumeClaim(name string, valkeyCluster *cachev1alpha1.ValkeyCluster) (*corev1.PersistentVolumeClaim, error) {
 	ls := labelsForValkeyCluster(valkeyCluster.Name)
@@ -1013,4 +1009,8 @@ func (r *ValkeyClusterReconciler) upsertConfigMap(ctx context.Context, valkeyClu
 			fmt.Sprintf("ConfigMap %s/%s is created", valkeyCluster.Namespace, valkeyCluster.Name))
 	}
 	return nil
+}
+
+func statefulSetSize(valkeyCluster *cachev1alpha1.ValkeyCluster) int32 {
+	return 1 + valkeyCluster.Spec.Replicas
 }
