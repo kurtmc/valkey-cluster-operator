@@ -410,7 +410,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				}
 				r.Recorder.Event(valkeyCluster, "Normal", "Updated",
 					fmt.Sprintf("PersistentVolumeClaim %s/%s is updated", found.Namespace, found.Name))
-				return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
+				return ctrl.Result{Requeue: true}, nil
 			}
 		}
 	}
