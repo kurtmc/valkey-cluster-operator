@@ -555,10 +555,9 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 				updateClusterNodes(valkeyCluster, clusterNodes)
 
-				// The following implementation will update the status
 				meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
 					Status: metav1.ConditionFalse, Reason: "Reconciling",
-					Message: fmt.Sprintf("StatefulSet for custom resource (%s) with %d replicas created successfully", valkeyCluster.Name, len(podList.Items))})
+					Message: fmt.Sprintf("Ran cluster meet operation", valkeyCluster.Name, len(podList.Items))})
 
 				if err := r.Status().Update(ctx, valkeyCluster); err != nil {
 					log.Error(err, "Failed to update ValkeyCluster status")
@@ -588,16 +587,6 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 	updateClusterNodes(valkeyCluster, clusterNodes)
-
-	// The following implementation will update the status
-	meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
-		Status: metav1.ConditionFalse, Reason: "Reconciling",
-		Message: fmt.Sprintf("Cluster meet for custom resource (%s) with %d node created successfully", valkeyCluster.Name, len(clusterNodes))})
-
-	if err := r.Status().Update(ctx, valkeyCluster); err != nil {
-		log.Error(err, "Failed to update ValkeyCluster status")
-		return ctrl.Result{}, err
-	}
 
 	clusterNodes, err = r.buildClusterNodes(ctx, valkeyCluster)
 	if err != nil {
@@ -872,6 +861,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		var currentConditionStatus metav1.ConditionStatus
 		for _, condition := range valkeyCluster.Status.Conditions {
 			if condition.Type == typeAvailableValkeyCluster {
+				log.Info("found available valkey cluster condition", "condition", condition, "type", condition.Type, "status", condition.Status)
 				currentConditionStatus = condition.Status
 			}
 		}
