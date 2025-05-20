@@ -22,6 +22,8 @@ import (
 	"embed"
 	"fmt"
 	"os"
+	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -553,11 +555,15 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 					return ctrl.Result{}, err
 				}
 
-				updateClusterNodes(valkeyCluster, clusterNodes)
+				err = r.updateClusterNodesStatus(ctx, req)
+				if err != nil {
+					log.Error(err, "Failed to update ValkeyCluster status")
+					return ctrl.Result{}, err
+				}
 
 				meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
 					Status: metav1.ConditionFalse, Reason: "Reconciling",
-					Message: fmt.Sprintf("Ran cluster meet operation", valkeyCluster.Name, len(podList.Items))})
+					Message: fmt.Sprintf("Ran cluster meet operation on %s with %d pods", valkeyCluster.Name, len(podList.Items))})
 
 				if err := r.Status().Update(ctx, valkeyCluster); err != nil {
 					log.Error(err, "Failed to update ValkeyCluster status")
@@ -586,7 +592,11 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		log.Error(err, "Failed to build cluster nodes")
 		return ctrl.Result{}, err
 	}
-	updateClusterNodes(valkeyCluster, clusterNodes)
+	err = r.updateClusterNodesStatus(ctx, req)
+	if err != nil {
+		log.Error(err, "Failed to update ValkeyCluster status")
+		return ctrl.Result{}, err
+	}
 
 	clusterNodes, err = r.buildClusterNodes(ctx, valkeyCluster)
 	if err != nil {
@@ -880,6 +890,57 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{}, nil
 }
 
+func (r *ValkeyClusterReconciler) updateClusterNodesStatus(ctx context.Context, req ctrl.Request) error {
+	logger := log.FromContext(ctx)
+	var valkeyCluster *cachev1alpha1.ValkeyCluster
+	if err := r.Get(ctx, req.NamespacedName, valkeyCluster); err != nil {
+		return err
+	}
+	clusterNodes, err := r.buildClusterNodes(ctx, valkeyCluster)
+	if err != nil {
+		return err
+	}
+
+	clusterNodesStatus := make(map[string][]cachev1alpha1.ValkeyClusterNode, 0)
+	for _, clusterNode := range clusterNodes {
+		re := regexp.MustCompile(valkeyCluster.Name + `-([\d]+)-([\d]+)`)
+		matches := re.FindAllStringSubmatch(clusterNode.Pod, -1)
+		shardIdx := matches[0][0]
+		if _, ok := clusterNodesStatus["shard:"+shardIdx]; !ok {
+			clusterNodesStatus["shard:"+shardIdx] = make([]cachev1alpha1.ValkeyClusterNode, 0)
+		}
+		clusterNodesStatus["shard:"+shardIdx] = append(clusterNodesStatus["shard:"+shardIdx], internalValkey.ToStatusClusterNode(*clusterNode))
+	}
+
+	for k := range clusterNodesStatus {
+		sort.Slice(clusterNodesStatus[k], func(i, j int) bool {
+			return clusterNodesStatus[k][i].Pod < clusterNodesStatus[k][j].Pod
+		})
+	}
+
+	needsUpdate := false
+	if len(valkeyCluster.Status.ClusterNodes) != len(clusterNodesStatus) {
+		needsUpdate = true
+	}
+
+	for k := range valkeyCluster.Status.ClusterNodes {
+		for j := range valkeyCluster.Status.ClusterNodes[k] {
+			if !reflect.DeepEqual(valkeyCluster.Status.ClusterNodes[k][j], clusterNodesStatus[k][j]) {
+				needsUpdate = true
+			}
+		}
+	}
+
+	if needsUpdate {
+		valkeyCluster.Status.ClusterNodes = clusterNodesStatus
+		if err := r.Update(ctx, valkeyCluster); err != nil {
+			return err
+		}
+		logger.Info("Valkey cluster %s/%s status updated", valkeyCluster.Namespace, valkeyCluster.Name)
+	}
+	return nil
+}
+
 func (r *ValkeyClusterReconciler) buildClusterNodes(ctx context.Context, valkeyCluster *cachev1alpha1.ValkeyCluster) ([]*internalValkey.ClusterNode, error) {
 	clusterNodes := []*internalValkey.ClusterNode{}
 	podList := &corev1.PodList{}
@@ -921,20 +982,6 @@ func (r *ValkeyClusterReconciler) buildClusterNodes(ctx context.Context, valkeyC
 		}
 	}
 	return clusterNodes, nil
-}
-
-func updateClusterNodes(valkeyCluster *cachev1alpha1.ValkeyCluster, clusterNodes []*internalValkey.ClusterNode) {
-	valkeyCluster.Status.ClusterNodes = make([]cachev1alpha1.ValkeyClusterNode, 0)
-	for _, clusterNode := range clusterNodes {
-		valkeyCluster.Status.ClusterNodes = append(valkeyCluster.Status.ClusterNodes, cachev1alpha1.ValkeyClusterNode{
-			Pod:          clusterNode.Pod,
-			IP:           clusterNode.IP,
-			ID:           clusterNode.ID,
-			MasterNodeID: clusterNode.MasterNodeID,
-			SlotRange:    fmt.Sprintf("%v", clusterNode.SlotRanges),
-			Flags:        clusterNode.Flags,
-		})
-	}
 }
 
 // SetupWithManager sets up the controller with the Manager.

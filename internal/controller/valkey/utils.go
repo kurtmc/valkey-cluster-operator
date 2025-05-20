@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	cachev1alpha1 "github.com/kurtmc/valkey-cluster-operator/api/v1alpha1"
 )
 
 type ClusterNode struct {
@@ -192,4 +194,15 @@ type Reshard struct {
 	FromID string
 	ToID   string
 	Slots  int
+}
+
+func ToStatusClusterNode(cn ClusterNode) cachev1alpha1.ValkeyClusterNode {
+	return cachev1alpha1.ValkeyClusterNode{
+		Pod:          cn.Pod,
+		IP:           cn.IP,
+		ID:           cn.ID,
+		SlotRange:    fmt.Sprintf("%v", cn.SlotRanges),
+		MasterNodeID: cn.MasterNodeID,
+		Flags:        cn.Flags,
+	}
 }

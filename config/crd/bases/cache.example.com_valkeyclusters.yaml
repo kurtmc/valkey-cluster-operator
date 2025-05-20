@@ -358,25 +358,27 @@ spec:
             description: ValkeyClusterStatus defines the observed state of ValkeyCluster
             properties:
               cluster_nodes:
-                description: Information about each pod
-                items:
-                  properties:
-                    flags:
-                      items:
+                additionalProperties:
+                  items:
+                    properties:
+                      flags:
+                        items:
+                          type: string
+                        type: array
+                      id:
                         type: string
-                      type: array
-                    id:
-                      type: string
-                    ip:
-                      type: string
-                    master_node_id:
-                      type: string
-                    pod:
-                      type: string
-                    slot_range:
-                      type: string
-                  type: object
-                type: array
+                      ip:
+                        type: string
+                      master_node_id:
+                        type: string
+                      pod:
+                        type: string
+                      slot_range:
+                        type: string
+                    type: object
+                  type: array
+                description: Information about each pod
+                type: object
               conditions:
                 description: Conditions store the status conditions of the ValkeyCluster
                   instances

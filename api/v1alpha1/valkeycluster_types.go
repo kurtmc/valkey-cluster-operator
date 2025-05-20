@@ -71,7 +71,7 @@ type ValkeyClusterStatus struct {
 
 	// Information about each pod
 	// +operator-sdk:csv:customresourcedefinitions:type=status
-	ClusterNodes []ValkeyClusterNode `json:"cluster_nodes,omitempty"`
+	ClusterNodes map[string][]ValkeyClusterNode `json:"cluster_nodes,omitempty"`
 }
 
 type ValkeyClusterNode struct {

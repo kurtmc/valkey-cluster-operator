@@ -252,9 +252,20 @@ func (in *ValkeyClusterStatus) DeepCopyInto(out *ValkeyClusterStatus) {
 	}
 	if in.ClusterNodes != nil {
 		in, out := &in.ClusterNodes, &out.ClusterNodes
-		*out = make([]ValkeyClusterNode, len(*in))
-		for i := range *in {
-			(*in)[i].DeepCopyInto(&(*out)[i])
+		*out = make(map[string][]ValkeyClusterNode, len(*in))
+		for key, val := range *in {
+			var outVal []ValkeyClusterNode
+			if val == nil {
+				(*out)[key] = nil
+			} else {
+				inVal := (*in)[key]
+				in, out := &inVal, &outVal
+				*out = make([]ValkeyClusterNode, len(*in))
+				for i := range *in {
+					(*in)[i].DeepCopyInto(&(*out)[i])
+				}
+			}
+			(*out)[key] = outVal
 		}
 	}
 }
