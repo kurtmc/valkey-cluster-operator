@@ -17,7 +17,10 @@ limitations under the License.
 package e2e
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -39,9 +42,32 @@ var _ = Describe("controller", Ordered, func() {
 	})
 
 	AfterAll(func() {
-		// By("removing manager namespace")
-		// cmd := exec.Command("kubectl", "delete", "ns", namespace)
-		// _, _ = utils.Run(cmd)
+		By("removing manager namespace")
+		cmd := exec.Command("kubectl", "delete", "--wait=false", "ns", namespace)
+		_, _ = utils.Run(cmd)
+
+		kubectlProxy := exec.Command("kubectl", "proxy")
+		defer kubectlProxy.Process.Kill()
+		go func() {
+			_, _ = utils.Run(kubectlProxy)
+		}()
+		time.Sleep(1 * time.Second)
+
+		cmd = exec.Command("kubectl", "get", "namespace", namespace, "-o", "json")
+		namespaceJson, _ := utils.Run(cmd)
+		nsObj := make(map[string]interface{})
+		json.Unmarshal(namespaceJson, &nsObj)
+		nsObj["spec"] = make(map[string][]interface{})
+		nsObj["spec"].(map[string][]interface{})["finalizers"] = make([]interface{}, 0)
+
+		b, _ := json.Marshal(nsObj)
+		buf := bytes.NewBuffer(b)
+		req, _ := http.NewRequest("PUT", fmt.Sprintf("http://127.0.0.1:8001/api/v1/namespaces/%s/finalize", namespace), buf)
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{}
+		resp, _ := client.Do(req)
+		defer resp.Body.Close()
 	})
 
 	Context("Operator", func() {
@@ -55,7 +81,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("building the manager(Operator) image")
 			// TODO: maybe push the image?
-			cmd := exec.Command("make", "docker-buildx", fmt.Sprintf("IMG=%s", projectimage), "PLATFORMS=linux/arm64")
+			cmd := exec.Command("make", "docker-buildx", "docker-push", fmt.Sprintf("IMG=%s", projectimage), "PLATFORMS=linux/amd64")
 			_, _ = utils.Run(cmd)
 			// ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
@@ -109,10 +135,10 @@ var _ = Describe("controller", Ordered, func() {
 			}
 			EventuallyWithOffset(1, verifyControllerUp, time.Minute, time.Second).Should(Succeed())
 
-			By("creating an instance of the Memcached Operand(CR)")
+			By("creating an instance of the ValkeyCluster Operand(CR)")
 			EventuallyWithOffset(1, func() error {
 				cmd = exec.Command("kubectl", "apply", "-f", filepath.Join(projectDir,
-					"config/samples/cache_v1alpha1_memcached.yaml"), "-n", namespace)
+					"config/samples/cache_v1alpha1_valkeycluster.yaml"), "-n", namespace)
 				_, err = utils.Run(cmd)
 				return err
 			}, time.Minute, time.Second).Should(Succeed())
@@ -120,14 +146,14 @@ var _ = Describe("controller", Ordered, func() {
 			By("validating that pod(s) status.phase=Running")
 			getMemcachedPodStatus := func() error {
 				cmd = exec.Command("kubectl", "get",
-					"pods", "-l", "app.kubernetes.io/name=memcached-operator",
+					"pods", "-l", "app.kubernetes.io/name=valkeyCluster-operator",
 					"-o", "jsonpath={.items[*].status}", "-n", namespace,
 				)
 				status, err := utils.Run(cmd)
 				fmt.Println(string(status))
 				ExpectWithOffset(2, err).NotTo(HaveOccurred())
 				if !strings.Contains(string(status), "\"phase\":\"Running\"") {
-					return fmt.Errorf("memcached pod in %s status", status)
+					return fmt.Errorf("valkeycluster pod in %s status", status)
 				}
 				return nil
 			}
@@ -135,8 +161,8 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("validating that the status of the custom resource created is updated or not")
 			getStatus := func() error {
-				cmd = exec.Command("kubectl", "get", "memcached",
-					"memcached-sample", "-o", "jsonpath={.status.conditions}",
+				cmd = exec.Command("kubectl", "get", "valkeycluster",
+					"valkeycluster-sample", "-o", "jsonpath={.status.conditions}",
 					"-n", namespace,
 				)
 				status, err := utils.Run(cmd)
