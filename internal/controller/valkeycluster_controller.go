@@ -22,6 +22,7 @@ import (
 	"embed"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -211,7 +212,6 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		log.Error(err, "Failed to upsert configmap")
 		return ctrl.Result{}, err
 	}
-	log.Info("configmap updated")
 
 	// Check if the statefulset already exists, if not create a new one
 	for stsIdx := 0; stsIdx < int(valkeyCluster.Spec.Shards); stsIdx++ {
@@ -812,6 +812,81 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	}
 
+	// assert available
+	clusterNodes, err = r.buildClusterNodes(ctx, valkeyCluster)
+	if err != nil {
+		log.Error(err, "Failed to build cluster nodes")
+		return ctrl.Result{}, err
+	}
+
+	clusterNodesMap := make(map[*internalValkey.ClusterNode][]*internalValkey.ClusterNode)
+	for _, cn := range clusterNodes {
+		if cn.IsMaster() {
+			clusterNodesMap[cn] = make([]*internalValkey.ClusterNode, 0)
+		}
+	}
+	for _, cn := range clusterNodes {
+		if !cn.IsMaster() {
+			for masterNode, _ := range clusterNodesMap {
+				if masterNode.ID == cn.MasterNodeID {
+					clusterNodesMap[masterNode] = append(clusterNodesMap[masterNode], cn)
+				}
+			}
+		}
+	}
+	isAvailable := true
+	if len(clusterNodesMap) != int(valkeyCluster.Spec.Shards) {
+		isAvailable = false
+	}
+	for _, v := range clusterNodesMap {
+		if len(v) != int(valkeyCluster.Spec.Replicas) {
+			isAvailable = false
+		}
+	}
+	expectedSlotCounts := internalValkey.SlotCounts(int(valkeyCluster.Spec.Shards))
+	sort.Ints(expectedSlotCounts)
+	actualSlotCounts = make([]int, 0)
+	for _, cn := range clusterNodes {
+		if cn.IsMaster() {
+			actualSlotCounts = append(actualSlotCounts, cn.SlotCount())
+		}
+	}
+	sort.Ints(actualSlotCounts)
+
+	if len(expectedSlotCounts) != len(actualSlotCounts) {
+		isAvailable = false
+	} else {
+		for idx, actual := range actualSlotCounts {
+			if actual != expectedSlotCounts[idx] {
+				isAvailable = false
+			}
+		}
+	}
+
+	if isAvailable {
+		if err := r.Get(ctx, req.NamespacedName, valkeyCluster); err != nil {
+			log.Error(err, "Failed to re-fetch valkeyCluster")
+			return ctrl.Result{}, err
+		}
+
+		var currentConditionStatus metav1.ConditionStatus
+		for _, condition := range valkeyCluster.Status.Conditions {
+			if condition.Type == typeAvailableValkeyCluster {
+				currentConditionStatus = condition.Status
+			}
+		}
+
+		if currentConditionStatus != metav1.ConditionTrue {
+			meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
+				Status: metav1.ConditionTrue, Reason: "Reconciling",
+				Message: fmt.Sprintf("Cluster for custom resource (%s) is avaiable", valkeyCluster.Name)})
+			if err := r.Status().Update(ctx, valkeyCluster); err != nil {
+				log.Error(err, "Failed to update ValkeyCluster status")
+				return ctrl.Result{}, err
+			}
+		}
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -1132,9 +1207,26 @@ func (r *ValkeyClusterReconciler) upsertConfigMap(ctx context.Context, valkeyClu
 	}
 	if err := r.Create(ctx, cm); err != nil {
 		if errors.IsAlreadyExists(err) {
-			if err := r.Update(ctx, cm); err != nil {
-				logger.Error(err, "failed to update ConfigMap")
-				return err
+			found := &corev1.ConfigMap{}
+			if err = r.Get(ctx, types.NamespacedName{Name: valkeyCluster.Name, Namespace: valkeyCluster.Namespace}, found); err != nil {
+				logger.Error(err, "failed to get ConfigMap")
+			}
+			needsUpdate := false
+			if len(found.Data) != len(cm.Data) {
+				needsUpdate = true
+			}
+			for k, v := range found.Data {
+				if v != cm.Data[k] {
+					needsUpdate = true
+				}
+			}
+
+			if needsUpdate {
+				if err := r.Update(ctx, cm); err != nil {
+					logger.Error(err, "failed to update ConfigMap")
+					return err
+				}
+				logger.Info("configmap updated")
 			}
 		} else {
 			logger.Error(err, "failed to create ConfigMap")

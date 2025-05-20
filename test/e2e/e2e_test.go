@@ -47,7 +47,6 @@ var _ = Describe("controller", Ordered, func() {
 		_, _ = utils.Run(cmd)
 
 		kubectlProxy := exec.Command("kubectl", "proxy")
-		defer kubectlProxy.Process.Kill()
 		go func() {
 			_, _ = utils.Run(kubectlProxy)
 		}()
@@ -144,7 +143,7 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("validating that pod(s) status.phase=Running")
-			getMemcachedPodStatus := func() error {
+			getValkeyClusterPodStatus := func() error {
 				cmd = exec.Command("kubectl", "get",
 					"pods", "-l", "app.kubernetes.io/name=valkeyCluster-operator",
 					"-o", "jsonpath={.items[*].status}", "-n", namespace,
@@ -157,7 +156,7 @@ var _ = Describe("controller", Ordered, func() {
 				}
 				return nil
 			}
-			EventuallyWithOffset(1, getMemcachedPodStatus, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, getValkeyClusterPodStatus, time.Minute, time.Second).Should(Succeed())
 
 			By("validating that the status of the custom resource created is updated or not")
 			getStatus := func() error {
@@ -175,6 +174,17 @@ var _ = Describe("controller", Ordered, func() {
 			}
 			Eventually(getStatus, time.Minute, time.Second).Should(Succeed())
 
+		})
+		It("should scale up", func() {
+			cmd := exec.Command("kubectl",
+				"-n", namespace,
+				"patch", "valkeycluster", "valkeycluster-sample",
+				"--type=json",
+				`-p='[{"op": "replace", "path": "/spec/shards", "value":3}]'`,
+			)
+			_, err := utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			// aws-vault exec halter-${HALTER_ENV} -- kubectl -n "${NAMESPACE}" patch sts "${NAMESPACE}-cluster" --type='json' -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/lifecycle", "value":{"preStop":{"exec":{"command":["sh", "-c", "/scripts/pre_stop.sh"]}}}}]'
 		})
 	})
 })
