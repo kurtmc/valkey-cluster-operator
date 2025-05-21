@@ -849,10 +849,18 @@ func (r *ValkeyClusterReconciler) reconcileValkeySlots(ctx context.Context, valk
 			}
 		}
 	}
+
+	// pad with 0s
 	if len(desiredSlotCounts) < len(actualSlotCounts) {
 		result = &ctrl.Result{Requeue: true}
 		for i := 0; i < len(actualSlotCounts)-len(desiredSlotCounts); i++ {
 			desiredSlotCounts = append(desiredSlotCounts, 0)
+		}
+	}
+	if len(desiredSlotCounts) > len(actualSlotCounts) {
+		result = &ctrl.Result{Requeue: true}
+		for i := 0; i < len(desiredSlotCounts)-len(actualSlotCounts); i++ {
+			actualSlotCounts = append(actualSlotCounts, 0)
 		}
 	}
 
