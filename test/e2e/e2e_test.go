@@ -78,8 +78,10 @@ var _ = Describe("controller", Ordered, func() {
 		req.Header.Set("Content-Type", "application/json")
 
 		client := &http.Client{}
-		resp, _ := client.Do(req)
-		defer resp.Body.Close()
+		resp, err := client.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+		}
 	})
 
 	Context("Operator", func() {
@@ -201,16 +203,17 @@ var _ = Describe("controller", Ordered, func() {
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 			EventuallyWithOffset(1, verifyClusterState("valkeycluster-sample", 3, 1), 6*time.Minute, 15*time.Second).Should(Succeed())
 		})
-		// It("should scale down", func() {
-		// 	cmd := exec.Command("kubectl",
-		// 		"-n", namespace,
-		// 		"patch", "valkeycluster", "valkeycluster-sample",
-		// 		"--type=json",
-		// 		`-p='[{"op": "replace", "path": "/spec/shards", "value":1}]'`,
-		// 	)
-		// 	_, err := utils.Run(cmd)
-		// 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
-		// })
+		It("should scale down", func() {
+			cmd := exec.Command("kubectl",
+				"-n", namespace,
+				"patch", "valkeycluster", "valkeycluster-sample",
+				"--type=json",
+				`-p=[{"op":"replace","path":"/spec/shards","value":2}]`,
+			)
+			_, err := utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			EventuallyWithOffset(1, verifyClusterState("valkeycluster-sample", 2, 1), 6*time.Minute, 15*time.Second).Should(Succeed())
+		})
 	})
 })
 

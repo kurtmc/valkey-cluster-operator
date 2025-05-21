@@ -7,7 +7,6 @@ rules:
 - apiGroups:
   - apps
   resources:
-  - deployments
   - statefulsets
   verbs:
   - create
@@ -20,7 +19,6 @@ rules:
 - apiGroups:
   - cache.example.com
   resources:
-  - memcacheds
   - valkeyclusters
   verbs:
   - create
@@ -33,14 +31,12 @@ rules:
 - apiGroups:
   - cache.example.com
   resources:
-  - memcacheds/finalizers
   - valkeyclusters/finalizers
   verbs:
   - update
 - apiGroups:
   - cache.example.com
   resources:
-  - memcacheds/status
   - valkeyclusters/status
   verbs:
   - get
