@@ -391,7 +391,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 	// we need to scale down
-	if len(stsList.Items) < int(valkeyCluster.Spec.Shards) {
+	if len(stsList.Items) > 1 && int(valkeyCluster.Spec.Shards) < len(stsList.Items) {
 		// first we need to check if the nth shard has all it's slots re-allocated
 		lastIdx := 0
 		var lastSts appsv1.StatefulSet
@@ -1119,6 +1119,7 @@ func (r *ValkeyClusterReconciler) statefulSet(name string, size int32, valkeyClu
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: valkeyCluster.Namespace,
+			Labels:    ls,
 		},
 		Spec: appsv1.StatefulSetSpec{
 			Replicas: &size,
