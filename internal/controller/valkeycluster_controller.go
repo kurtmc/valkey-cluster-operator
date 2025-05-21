@@ -388,32 +388,8 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			found := &corev1.PersistentVolumeClaim{}
 			err = r.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: valkeyCluster.Namespace}, found)
 			if err != nil && apierrors.IsNotFound(err) {
-				// pvc, err := r.persistentVolumeClaim(pvcName, valkeyCluster)
-				// if err != nil {
-				// 	log.Error(err, "Failed to define new PersistenVolumeClaim resource for ValkeyCluster")
-				// 	// The following implementation will update the status
-				// 	meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
-				// 		Status: metav1.ConditionFalse, Reason: "Reconciling",
-				// 		Message: fmt.Sprintf("Failed to create PersistentVolumeClaim for the custom resource (%s): (%s)", valkeyCluster.Name, err)})
-				//
-				// 	if err := r.Status().Update(ctx, valkeyCluster); err != nil {
-				// 		log.Error(err, "Failed to update ValkeyCluster status")
-				// 		return ctrl.Result{}, err
-				// 	}
-				//
-				// 	return ctrl.Result{}, err
-				// }
-				// log.Info("Creating a new PersistentVolumeClaim",
-				// 	"StatefulSet.Namespace", pvc.Namespace, "StatefulSet.Name", pvc.Name)
-				// if err = r.Create(ctx, pvc); err != nil {
-				// 	log.Error(err, "Failed to create new PersistentVolumeClaim",
-				// 		"PersistentVolumeClaim.Namespace", pvc.Namespace, "PersistentVolumeClaim.Name", pvc.Name)
-				// 	return ctrl.Result{}, err
-				// }
-				// r.Recorder.Event(valkeyCluster, "Normal", "Created",
-				// 	fmt.Sprintf("PersistentVolumeClaim %s/%s is created", valkeyCluster.Namespace, pvc.Name))
-				log.Error(err, "Failed to get PersistentVolumeClaims")
-				return ctrl.Result{}, err
+				log.Info("PVC not found, requeuing", "PVC", pvcName)
+				return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
 			} else if err != nil {
 				log.Error(err, "Failed to get PersistentVolumeClaims")
 				// Let's return the error for the reconciliation be re-trigged again
