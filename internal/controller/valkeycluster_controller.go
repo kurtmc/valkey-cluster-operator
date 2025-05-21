@@ -25,6 +25,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -260,7 +261,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			return ctrl.Result{}, err
 		}
 
-		// We can simply increase the number of replicas if we are scaling up
+		// We can simply change the number of replicas inside the shard as that has no impact on data availabilty
 		if *found.Spec.Replicas != (statefulSetSize(valkeyCluster)) && *found.Spec.Replicas < (statefulSetSize(valkeyCluster)) {
 			log.Info(fmt.Sprintf("StatefulSet needs to increase replicas from %d to %d", *found.Spec.Replicas, (valkeyCluster.Spec.Shards + valkeyCluster.Spec.Replicas)))
 			found.Spec.Replicas = &[]int32{(statefulSetSize(valkeyCluster))}[0]
@@ -296,8 +297,6 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			// so that we can ensure that we have the latest state of the resource before
 			// update. Also, it will help ensure the desired state on the cluster
 			return ctrl.Result{Requeue: true}, nil
-		} else {
-			// TODO: here we are scaling down so we need to ensure we have resharded first
 		}
 
 		foundResources := found.Spec.Template.Spec.Containers[0].Resources
@@ -381,6 +380,60 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	}
 
+	// Check if we need to remove a shard
+	stsList := &appsv1.StatefulSetList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(valkeyCluster.Namespace),
+		client.MatchingLabels(labelsForValkeyCluster(valkeyCluster.Name)),
+	}
+	if err = r.List(ctx, stsList, listOpts...); err != nil {
+		log.Error(err, "Failed to list StatefulSets", "ValkeyCluster.Namespace", valkeyCluster.Namespace, "ValkeyCluster.Name", valkeyCluster.Name)
+		return ctrl.Result{}, err
+	}
+	// we need to scale down
+	if len(stsList.Items) < int(valkeyCluster.Spec.Shards) {
+		// first we need to check if the nth shard has all it's slots re-allocated
+		lastIdx := 0
+		var lastSts appsv1.StatefulSet
+		re := regexp.MustCompile(fmt.Sprintf(`%s-(\d+)`, valkeyCluster.Name))
+		for _, sts := range stsList.Items {
+			matches := re.FindAllStringSubmatch(sts.Name, -1)
+			stsIdx, err := strconv.Atoi(matches[0][1])
+			if err != nil {
+				log.Error(err, "Failed to get StatefulSet index from", "StatefulSet.name", sts.Name)
+				return ctrl.Result{}, err
+			}
+			if stsIdx > lastIdx {
+				lastIdx = stsIdx
+				lastSts = sts
+			}
+		}
+
+		clusterNodes, err := r.buildClusterNodes(ctx, valkeyCluster)
+		if err != nil {
+			log.Error(err, "Failed to build cluster nodes")
+			return ctrl.Result{}, err
+		}
+
+		slotsInShard := false
+		for _, cn := range clusterNodes {
+			if !strings.HasPrefix(cn.Pod, fmt.Sprintf("%s-%d-", valkeyCluster.Name, lastIdx)) {
+				continue
+			}
+			if cn.HasSlots() {
+				slotsInShard = true
+			}
+		}
+		if !slotsInShard {
+			if err := r.Delete(ctx, &lastSts); err != nil {
+				log.Error(err, "Failed to delete StatfulSet", "StatefulSet", lastSts)
+				return ctrl.Result{}, err
+			}
+			r.Recorder.Event(valkeyCluster, "Normal", "Deleted",
+				fmt.Sprintf("StatefulSet %s/%s is deleted", lastSts.Namespace, lastSts.Name))
+		}
+	}
+
 	// check if pvs already exist, they should be created by the statefulset
 	for stsIdx := 0; stsIdx < int(valkeyCluster.Spec.Shards); stsIdx++ {
 		for pvcIdx := 0; pvcIdx < int(statefulSetSize(valkeyCluster)); pvcIdx++ {
@@ -429,12 +482,9 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 
-	// Check the status of the valkey cluster
-	clusterNodes := []*internalValkey.ClusterNode{}
-
-	// get all the pods in the statefulset
+	// wait for all pods to be running and accessible via valkey-client
 	podList := &corev1.PodList{}
-	listOpts := []client.ListOption{
+	listOpts = []client.ListOption{
 		client.InNamespace(valkeyCluster.Namespace),
 		client.MatchingLabels(labelsForValkeyCluster(valkeyCluster.Name)),
 	}
@@ -463,31 +513,23 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				return ctrl.Result{}, err
 			}
 			defer client.Close()
-			clusterNodesTxt, err := client.Do(ctx, client.B().ClusterNodes().Build()).ToString()
+			_, err = client.Do(ctx, client.B().ClusterNodes().Build()).ToString()
 			if err != nil {
 				log.Error(err, "Failed to get cluster nodes")
 				return ctrl.Result{}, err
 			}
-
-			cn, err := internalValkey.ParseClusterNode(clusterNodesTxt)
-			if err != nil {
-				log.Error(err, "Failed to parse cluster node")
-				return ctrl.Result{}, err
-			}
-			cn.Pod = pod.Name
-			clusterNodes = append(clusterNodes, cn)
 		} else {
 			log.Info("Pod not ready", "Pod.Name", pod.Name)
 			return ctrl.Result{RequeueAfter: time.Minute}, nil
 		}
 	}
 
-	// there should be the correct number of cluster nodes now
-	if len(clusterNodes) != int(valkeyCluster.Spec.Shards*statefulSetSize(valkeyCluster)) {
-		err := fmt.Errorf("Number of clusterNodes (%d) != number of expected pods (%d)", len(clusterNodes), int(valkeyCluster.Spec.Shards*statefulSetSize(valkeyCluster)))
-		return ctrl.Result{}, err
+	clusterNodes, err := r.buildClusterNodes(ctx, valkeyCluster)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("Could not build cluster nodes: %v", err)
 	}
 
+	// cluster meet
 	for _, clusterNodeA := range clusterNodes {
 		for _, clusterNodeB := range clusterNodes {
 			if clusterNodeA.Pod != clusterNodeB.Pod {
@@ -674,39 +716,144 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 
-	// resharding when increasing shards
-	// find primary per shard and get slot count
-	primaries := []*internalValkey.ClusterNode{}
-	for shardIdx := 0; shardIdx < int(valkeyCluster.Spec.Shards); shardIdx++ {
-		clusterNodesForShard := make([]*internalValkey.ClusterNode, 0)
-		for _, cn := range clusterNodes {
-			if strings.HasPrefix(cn.Pod, fmt.Sprintf("%s-%d-", valkeyCluster.Name, shardIdx)) {
-				clusterNodesForShard = append(clusterNodesForShard, cn)
-			}
-		}
+	// RESHARDING
+	res, err := r.reconcileValkeySlots(ctx, valkeyCluster)
+	if err != nil {
+		log.Error(err, "Failed to reshard")
+		return ctrl.Result{}, err
+	}
+	if res != nil {
+		return *res, nil
+	}
 
-		var primary *internalValkey.ClusterNode
-		for _, cn := range clusterNodesForShard {
-			if cn.HasSlots() && cn.IsMaster() {
-				primary = cn
-			}
+	// assert available
+	clusterNodes, err = r.buildClusterNodes(ctx, valkeyCluster)
+	if err != nil {
+		log.Error(err, "Failed to build cluster nodes")
+		return ctrl.Result{}, err
+	}
+
+	clusterNodesMap := make(map[*internalValkey.ClusterNode][]*internalValkey.ClusterNode)
+	for _, cn := range clusterNodes {
+		if cn.IsMaster() {
+			clusterNodesMap[cn] = make([]*internalValkey.ClusterNode, 0)
 		}
-		if primary != nil {
-			primaries = append(primaries, primary)
-		}
-		if primary == nil {
-			for _, cn := range clusterNodesForShard {
-				if cn.IsMaster() {
-					primaries = append(primaries, cn)
+	}
+	for _, cn := range clusterNodes {
+		if !cn.IsMaster() {
+			for masterNode, _ := range clusterNodesMap {
+				if masterNode.ID == cn.MasterNodeID {
+					clusterNodesMap[masterNode] = append(clusterNodesMap[masterNode], cn)
 				}
 			}
 		}
 	}
+	isAvailable := true
+	if len(clusterNodesMap) != int(valkeyCluster.Spec.Shards) {
+		isAvailable = false
+	}
+	for _, v := range clusterNodesMap {
+		if len(v) != int(valkeyCluster.Spec.Replicas) {
+			isAvailable = false
+		}
+	}
+	expectedSlotCounts := internalValkey.SlotCounts(int(valkeyCluster.Spec.Shards))
+	sort.Ints(expectedSlotCounts)
+	actualSlotCounts := make([]int, 0)
+	for _, cn := range clusterNodes {
+		if cn.IsMaster() {
+			actualSlotCounts = append(actualSlotCounts, cn.SlotCount())
+		}
+	}
+	sort.Ints(actualSlotCounts)
+
+	if len(expectedSlotCounts) != len(actualSlotCounts) {
+		isAvailable = false
+	} else {
+		for idx, actual := range actualSlotCounts {
+			if actual != expectedSlotCounts[idx] {
+				isAvailable = false
+			}
+		}
+	}
+
+	if isAvailable {
+		if err := r.Get(ctx, req.NamespacedName, valkeyCluster); err != nil {
+			log.Error(err, "Failed to re-fetch valkeyCluster")
+			return ctrl.Result{}, err
+		}
+
+		var currentConditionStatus metav1.ConditionStatus
+		for _, condition := range valkeyCluster.Status.Conditions {
+			if condition.Type == typeAvailableValkeyCluster {
+				log.Info("found available valkey cluster condition", "condition", condition, "type", condition.Type, "status", condition.Status)
+				currentConditionStatus = condition.Status
+			}
+		}
+
+		if currentConditionStatus != metav1.ConditionTrue {
+			meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
+				Status: metav1.ConditionTrue, Reason: "Reconciling",
+				Message: fmt.Sprintf("Cluster for custom resource (%s) is avaiable", valkeyCluster.Name)})
+			if err := r.Status().Update(ctx, valkeyCluster); err != nil {
+				log.Error(err, "Failed to update ValkeyCluster status")
+				return ctrl.Result{}, err
+			}
+		}
+	}
+
+	return ctrl.Result{}, nil
+}
+
+// This method can request a requeue. A nil value is considered nothing, if it's not nil the value is used to requeue
+func (r *ValkeyClusterReconciler) reconcileValkeySlots(ctx context.Context, valkeyCluster *cachev1alpha1.ValkeyCluster) (*ctrl.Result, error) {
+	var result *ctrl.Result
+
+	clusterNodes, err := r.buildClusterNodes(ctx, valkeyCluster)
+	if err != nil {
+		return result, err
+	}
+
+	// find primary per shard and get slot count
+
+	re := regexp.MustCompile(fmt.Sprintf(`%s-(\d+)-(\d+)`, valkeyCluster.Name))
+
+	primaries := []*internalValkey.ClusterNode{}
+
+	clusterNodesForShard := make(map[int][]*internalValkey.ClusterNode)
+	for _, cn := range clusterNodes {
+		matches := re.FindAllStringSubmatch(cn.Pod, -1)
+		shardIdx, err := strconv.Atoi(matches[0][1])
+		if err != nil {
+			return result, fmt.Errorf("could not parse shard index: %v", err)
+		}
+		if _, ok := clusterNodesForShard[shardIdx]; !ok {
+			clusterNodesForShard[shardIdx] = make([]*internalValkey.ClusterNode, 0)
+		}
+		clusterNodesForShard[shardIdx] = append(clusterNodesForShard[shardIdx], cn)
+	}
 
 	desiredSlotCounts := internalValkey.SlotCounts(int(valkeyCluster.Spec.Shards))
 	actualSlotCounts := []int{}
-	for _, p := range primaries {
-		actualSlotCounts = append(actualSlotCounts, p.SlotCount())
+	maxIdx := 0
+	for idx := range clusterNodesForShard {
+		if idx > maxIdx {
+			maxIdx = idx
+		}
+	}
+	for i := 0; i <= maxIdx; i++ {
+		for _, cn := range clusterNodesForShard[i] {
+			if cn.IsMaster() && cn.HasSlots() {
+				primaries = append(primaries, cn)
+				actualSlotCounts = append(actualSlotCounts, cn.SlotCount())
+			}
+		}
+	}
+	if len(desiredSlotCounts) < len(actualSlotCounts) {
+		result = &ctrl.Result{Requeue: true}
+		for i := 0; i < len(actualSlotCounts)-len(desiredSlotCounts); i++ {
+			desiredSlotCounts = append(desiredSlotCounts, 0)
+		}
 	}
 
 	actionPlan := []internalValkey.Reshard{}
@@ -772,8 +919,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}, runtime.NewParameterCodec(r.Scheme))
 		exec, err := remotecommand.NewSPDYExecutor(r.RestConfig, "POST", req.URL())
 		if err != nil {
-			log.Error(err, "Failed to reshard")
-			return ctrl.Result{}, err
+			return result, fmt.Errorf("Failed to reshard: %v", err)
 		}
 		var stdout, stderr bytes.Buffer
 		err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
@@ -781,89 +927,11 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			Stderr: &stderr,
 		})
 		if err != nil {
-			log.Error(err, fmt.Sprintf("Failed executing command: %s %s", stdout.String(), stderr.String()))
-			return ctrl.Result{}, err
+			return result, fmt.Errorf("Failed executing command: %s %s", stdout.String(), stderr.String())
 		}
 
 	}
-
-	// assert available
-	clusterNodes, err = r.buildClusterNodes(ctx, valkeyCluster)
-	if err != nil {
-		log.Error(err, "Failed to build cluster nodes")
-		return ctrl.Result{}, err
-	}
-
-	clusterNodesMap := make(map[*internalValkey.ClusterNode][]*internalValkey.ClusterNode)
-	for _, cn := range clusterNodes {
-		if cn.IsMaster() {
-			clusterNodesMap[cn] = make([]*internalValkey.ClusterNode, 0)
-		}
-	}
-	for _, cn := range clusterNodes {
-		if !cn.IsMaster() {
-			for masterNode, _ := range clusterNodesMap {
-				if masterNode.ID == cn.MasterNodeID {
-					clusterNodesMap[masterNode] = append(clusterNodesMap[masterNode], cn)
-				}
-			}
-		}
-	}
-	isAvailable := true
-	if len(clusterNodesMap) != int(valkeyCluster.Spec.Shards) {
-		isAvailable = false
-	}
-	for _, v := range clusterNodesMap {
-		if len(v) != int(valkeyCluster.Spec.Replicas) {
-			isAvailable = false
-		}
-	}
-	expectedSlotCounts := internalValkey.SlotCounts(int(valkeyCluster.Spec.Shards))
-	sort.Ints(expectedSlotCounts)
-	actualSlotCounts = make([]int, 0)
-	for _, cn := range clusterNodes {
-		if cn.IsMaster() {
-			actualSlotCounts = append(actualSlotCounts, cn.SlotCount())
-		}
-	}
-	sort.Ints(actualSlotCounts)
-
-	if len(expectedSlotCounts) != len(actualSlotCounts) {
-		isAvailable = false
-	} else {
-		for idx, actual := range actualSlotCounts {
-			if actual != expectedSlotCounts[idx] {
-				isAvailable = false
-			}
-		}
-	}
-
-	if isAvailable {
-		if err := r.Get(ctx, req.NamespacedName, valkeyCluster); err != nil {
-			log.Error(err, "Failed to re-fetch valkeyCluster")
-			return ctrl.Result{}, err
-		}
-
-		var currentConditionStatus metav1.ConditionStatus
-		for _, condition := range valkeyCluster.Status.Conditions {
-			if condition.Type == typeAvailableValkeyCluster {
-				log.Info("found available valkey cluster condition", "condition", condition, "type", condition.Type, "status", condition.Status)
-				currentConditionStatus = condition.Status
-			}
-		}
-
-		if currentConditionStatus != metav1.ConditionTrue {
-			meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
-				Status: metav1.ConditionTrue, Reason: "Reconciling",
-				Message: fmt.Sprintf("Cluster for custom resource (%s) is avaiable", valkeyCluster.Name)})
-			if err := r.Status().Update(ctx, valkeyCluster); err != nil {
-				log.Error(err, "Failed to update ValkeyCluster status")
-				return ctrl.Result{}, err
-			}
-		}
-	}
-
-	return ctrl.Result{}, nil
+	return result, nil
 }
 
 func (r *ValkeyClusterReconciler) updateClusterNodesStatus(ctx context.Context, req ctrl.Request) error {
@@ -916,6 +984,27 @@ func (r *ValkeyClusterReconciler) updateClusterNodesStatus(ctx context.Context, 
 		logger.Info(fmt.Sprintf("Valkey cluster %s/%s status updated", valkeyCluster.Namespace, valkeyCluster.Name))
 	}
 	return nil
+}
+
+func (r *ValkeyClusterReconciler) buildClusterNodesForShard(ctx context.Context, valkeyCluster *cachev1alpha1.ValkeyCluster) (map[int][]*internalValkey.ClusterNode, error) {
+	clusterNodes, err := r.buildClusterNodes(ctx, valkeyCluster)
+	if err != nil {
+		return nil, err
+	}
+	re := regexp.MustCompile(fmt.Sprintf(`%s-(\d+)-(\d+)`, valkeyCluster.Name))
+	clusterNodesForShard := make(map[int][]*internalValkey.ClusterNode)
+	for _, cn := range clusterNodes {
+		matches := re.FindAllStringSubmatch(cn.Pod, -1)
+		shardIdx, err := strconv.Atoi(matches[0][1])
+		if err != nil {
+			return nil, fmt.Errorf("could not parse shard index: %v", err)
+		}
+		if _, ok := clusterNodesForShard[shardIdx]; !ok {
+			clusterNodesForShard[shardIdx] = make([]*internalValkey.ClusterNode, 0)
+		}
+		clusterNodesForShard[shardIdx] = append(clusterNodesForShard[shardIdx], cn)
+	}
+	return clusterNodesForShard, nil
 }
 
 func (r *ValkeyClusterReconciler) buildClusterNodes(ctx context.Context, valkeyCluster *cachev1alpha1.ValkeyCluster) ([]*internalValkey.ClusterNode, error) {
