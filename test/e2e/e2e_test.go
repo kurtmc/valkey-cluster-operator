@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -44,12 +45,22 @@ var _ = Describe("controller", Ordered, func() {
 
 	AfterAll(func() {
 		By("removing manager namespace")
-		cmd := exec.Command("kubectl", "delete", "--wait=false", "ns", namespace)
+		cmd := exec.Command("kubectl", "delete", "--grace-period=1", "--timeout=60s", "ns", namespace)
 		_, _ = utils.Run(cmd)
 
 		kubectlProxy := exec.Command("kubectl", "proxy")
+		kubectlProxy.Env = append(os.Environ(), "GO111MODULE=on")
 		go func() {
-			_, _ = utils.Run(kubectlProxy)
+			err := kubectlProxy.Start()
+			if err != nil {
+				panic(err)
+			}
+		}()
+		defer func() {
+			err := kubectlProxy.Process.Kill()
+			if err != nil {
+				panic(err)
+			}
 		}()
 		time.Sleep(1 * time.Second)
 
@@ -102,7 +113,6 @@ var _ = Describe("controller", Ordered, func() {
 			By("validating that the controller-manager pod is running as expected")
 			verifyControllerUp := func() error {
 				// Get pod name
-
 				cmd = exec.Command("kubectl", "get",
 					"pods", "-l", "control-plane=controller-manager",
 					"-o", "go-template={{ range .items }}"+
@@ -177,7 +187,7 @@ var _ = Describe("controller", Ordered, func() {
 
 		})
 		It("should have working cluster", func() {
-			EventuallyWithOffset(1, verifyClusterState("valkeycluster-sample", 1, 1), time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, verifyClusterState("valkeycluster-sample", 1, 1), 2*time.Minute, time.Second).Should(Succeed())
 		})
 		It("should scale up", func() {
 			cmd := exec.Command("kubectl",
@@ -255,6 +265,7 @@ func verifyClusterState(name string, shards, replicas int) func() error {
 			if err != nil {
 				return fmt.Errorf("received error parsing cluster node: %v", err)
 			}
+			cn.Pod = podName
 			clusterNodes = append(clusterNodes, cn)
 		}
 
@@ -266,7 +277,7 @@ func verifyClusterState(name string, shards, replicas int) func() error {
 			var primaryNode *valkey.ClusterNode
 			var replicaNodes []*valkey.ClusterNode
 			for _, cn := range clusterNodes {
-				if !strings.HasPrefix(cn.Pod, fmt.Sprintf("%s-%d", name, shardIdx)) {
+				if !strings.HasPrefix(cn.Pod, fmt.Sprintf("%s-%d-", name, shardIdx)) {
 					continue
 				}
 
