@@ -177,18 +177,18 @@ var _ = Describe("controller", Ordered, func() {
 
 		})
 		It("should have working cluster", func() {
-			EventuallyWithOffset(1, verifyClusterState(1, 1), time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, verifyClusterState("valkeycluster-sample", 1, 1), time.Minute, time.Second).Should(Succeed())
 		})
 		It("should scale up", func() {
 			cmd := exec.Command("kubectl",
 				"-n", namespace,
 				"patch", "valkeycluster", "valkeycluster-sample",
 				"--type=json",
-				`-p='[{"op": "replace", "path": "/spec/shards", "value":3}]'`,
+				`-p=[{"op":"replace","path":"/spec/shards","value":3}]`,
 			)
 			_, err := utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			EventuallyWithOffset(1, verifyClusterState(3, 1), 3*time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, verifyClusterState("valkeycluster-sample", 3, 1), 3*time.Minute, 15*time.Second).Should(Succeed())
 		})
 		// It("should scale down", func() {
 		// 	cmd := exec.Command("kubectl",
@@ -203,7 +203,7 @@ var _ = Describe("controller", Ordered, func() {
 	})
 })
 
-func verifyClusterState(shards, replicas int) func() error {
+func verifyClusterState(name string, shards, replicas int) func() error {
 	return func() error {
 		expectedSlots := valkey.SlotCounts(shards)
 
@@ -266,6 +266,10 @@ func verifyClusterState(shards, replicas int) func() error {
 			var primaryNode *valkey.ClusterNode
 			var replicaNodes []*valkey.ClusterNode
 			for _, cn := range clusterNodes {
+				if !strings.HasPrefix(cn.Pod, fmt.Sprintf("%s-%d", name, shardIdx)) {
+					continue
+				}
+
 				if cn.IsMaster() {
 					primaryNode = cn
 				} else {
