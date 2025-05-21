@@ -29,6 +29,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/kurtmc/valkey-cluster-operator/internal/controller/valkey"
 	"github.com/kurtmc/valkey-cluster-operator/test/utils"
 )
 
@@ -175,6 +176,9 @@ var _ = Describe("controller", Ordered, func() {
 			Eventually(getStatus, time.Minute, time.Second).Should(Succeed())
 
 		})
+		It("should have working cluster", func() {
+			EventuallyWithOffset(1, verifyClusterState(1, 1), time.Minute, time.Second).Should(Succeed())
+		})
 		It("should scale up", func() {
 			cmd := exec.Command("kubectl",
 				"-n", namespace,
@@ -184,7 +188,106 @@ var _ = Describe("controller", Ordered, func() {
 			)
 			_, err := utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			// aws-vault exec halter-${HALTER_ENV} -- kubectl -n "${NAMESPACE}" patch sts "${NAMESPACE}-cluster" --type='json' -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/lifecycle", "value":{"preStop":{"exec":{"command":["sh", "-c", "/scripts/pre_stop.sh"]}}}}]'
+			EventuallyWithOffset(1, verifyClusterState(3, 1), 3*time.Minute, time.Second).Should(Succeed())
 		})
+		// It("should scale down", func() {
+		// 	cmd := exec.Command("kubectl",
+		// 		"-n", namespace,
+		// 		"patch", "valkeycluster", "valkeycluster-sample",
+		// 		"--type=json",
+		// 		`-p='[{"op": "replace", "path": "/spec/shards", "value":1}]'`,
+		// 	)
+		// 	_, err := utils.Run(cmd)
+		// 	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+		// })
 	})
 })
+
+func verifyClusterState(shards, replicas int) func() error {
+	return func() error {
+		expectedSlots := valkey.SlotCounts(shards)
+
+		cmd := exec.Command("kubectl", "get",
+			"pods", "-l", "cache/name=valkeycluster-sample",
+			"-o", "go-template={{ range .items }}"+
+				"{{ if not .metadata.deletionTimestamp }}"+
+				"{{ .metadata.name }}"+
+				"{{ \"\\n\" }}{{ end }}{{ end }}",
+			"-n", namespace,
+		)
+		podOutput, err := utils.Run(cmd)
+		if err != nil {
+			return fmt.Errorf("recieved error getting pods: %v", err)
+		}
+		podNames := utils.GetNonEmptyLines(string(podOutput))
+		if len(podNames) != shards+shards*replicas {
+			return fmt.Errorf("expect %d valkey cluster pods running, but got %d", shards+shards*replicas, len(podNames))
+		}
+
+		// Validate pod status
+		for _, podName := range podNames {
+			cmd = exec.Command("kubectl", "get",
+				"pods", podName, "-o", "jsonpath={.status.phase}",
+				"-n", namespace,
+			)
+			status, err := utils.Run(cmd)
+			if err != nil {
+				return fmt.Errorf("received error getting pod phase: %v", err)
+			}
+			if string(status) != "Running" {
+				return fmt.Errorf("valkey node pod (%s) in %s status", podName, status)
+			}
+		}
+
+		clusterNodes := make([]*valkey.ClusterNode, 0)
+		for _, podName := range podNames {
+			cmd = exec.Command("kubectl", "-n", namespace, "exec", podName, "--", "valkey-cli", "cluster", "nodes")
+			clusterNodesTxt, err := utils.Run(cmd)
+			if err != nil {
+				return fmt.Errorf("received error running kubectl exec: %v", err)
+
+			}
+			if len(clusterNodesTxt) <= 0 {
+				return fmt.Errorf("cluster nodes output should exist but got '%s'", clusterNodesTxt)
+			}
+
+			cn, err := valkey.ParseClusterNode(string(clusterNodesTxt))
+			if err != nil {
+				return fmt.Errorf("received error parsing cluster node: %v", err)
+			}
+			clusterNodes = append(clusterNodes, cn)
+		}
+
+		if len(clusterNodes) != shards+shards*replicas {
+			return fmt.Errorf("expect %d valkey cluster nodes running, but got %d", shards+shards*replicas, len(clusterNodes))
+		}
+
+		for shardIdx := 0; shardIdx < shards; shardIdx++ {
+			var primaryNode *valkey.ClusterNode
+			var replicaNodes []*valkey.ClusterNode
+			for _, cn := range clusterNodes {
+				if cn.IsMaster() {
+					primaryNode = cn
+				} else {
+					replicaNodes = append(replicaNodes, cn)
+				}
+			}
+			if primaryNode == nil {
+				return fmt.Errorf("shard %d expect pimary to exist", shardIdx)
+			}
+			if len(replicaNodes) != replicas {
+				return fmt.Errorf("shard %d expect %d replica nodes but got %d", shardIdx, replicas, len(replicaNodes))
+			}
+			if primaryNode.SlotCount() != expectedSlots[shardIdx] {
+				return fmt.Errorf("shard %d expect primary node to have %d slots but got %d", shardIdx, expectedSlots[shardIdx], primaryNode.SlotCount())
+			}
+			for _, replicaNode := range replicaNodes {
+				if replicaNode.MasterNodeID != primaryNode.ID {
+					return fmt.Errorf("shard %d expect replica node to %s as master node ID but got %s", shardIdx, primaryNode.ID, replicaNode.MasterNodeID)
+				}
+			}
+			return nil
+		}
+		return nil
+	}
+}

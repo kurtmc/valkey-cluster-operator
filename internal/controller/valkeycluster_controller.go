@@ -892,7 +892,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 func (r *ValkeyClusterReconciler) updateClusterNodesStatus(ctx context.Context, req ctrl.Request) error {
 	logger := log.FromContext(ctx)
-	var valkeyCluster *cachev1alpha1.ValkeyCluster
+	valkeyCluster := &cachev1alpha1.ValkeyCluster{}
 	if err := r.Get(ctx, req.NamespacedName, valkeyCluster); err != nil {
 		return err
 	}
@@ -905,7 +905,7 @@ func (r *ValkeyClusterReconciler) updateClusterNodesStatus(ctx context.Context, 
 	for _, clusterNode := range clusterNodes {
 		re := regexp.MustCompile(valkeyCluster.Name + `-([\d]+)-([\d]+)`)
 		matches := re.FindAllStringSubmatch(clusterNode.Pod, -1)
-		shardIdx := matches[0][0]
+		shardIdx := matches[0][1]
 		if _, ok := clusterNodesStatus["shard:"+shardIdx]; !ok {
 			clusterNodesStatus["shard:"+shardIdx] = make([]cachev1alpha1.ValkeyClusterNode, 0)
 		}
@@ -922,21 +922,22 @@ func (r *ValkeyClusterReconciler) updateClusterNodesStatus(ctx context.Context, 
 	if len(valkeyCluster.Status.ClusterNodes) != len(clusterNodesStatus) {
 		needsUpdate = true
 	}
-
-	for k := range valkeyCluster.Status.ClusterNodes {
-		for j := range valkeyCluster.Status.ClusterNodes[k] {
-			if !reflect.DeepEqual(valkeyCluster.Status.ClusterNodes[k][j], clusterNodesStatus[k][j]) {
-				needsUpdate = true
-			}
-		}
+	if !reflect.DeepEqual(valkeyCluster.Status.ClusterNodes, clusterNodesStatus) {
+		needsUpdate = true
 	}
 
 	if needsUpdate {
+		valkeyCluster.Status.ClusterNodes = make(map[string][]cachev1alpha1.ValkeyClusterNode)
+		for k, v := range clusterNodesStatus {
+			for _, n := range v {
+				valkeyCluster.Status.ClusterNodes[k] = append(valkeyCluster.Status.ClusterNodes[k], n)
+			}
+		}
 		valkeyCluster.Status.ClusterNodes = clusterNodesStatus
-		if err := r.Update(ctx, valkeyCluster); err != nil {
+		if err := r.Status().Update(ctx, valkeyCluster); err != nil {
 			return err
 		}
-		logger.Info("Valkey cluster %s/%s status updated", valkeyCluster.Namespace, valkeyCluster.Name)
+		logger.Info(fmt.Sprintf("Valkey cluster %s/%s status updated", valkeyCluster.Namespace, valkeyCluster.Name))
 	}
 	return nil
 }
