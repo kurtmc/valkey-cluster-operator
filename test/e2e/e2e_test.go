@@ -138,7 +138,7 @@ var _ = Describe("controller", Ordered, func() {
 				}
 				return nil
 			}
-			EventuallyWithOffset(1, verifyControllerUp, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, verifyControllerUp, time.Minute, 2*time.Second).Should(Succeed())
 
 			By("creating an instance of the ValkeyCluster Operand(CR)")
 			EventuallyWithOffset(1, func() error {
@@ -162,7 +162,7 @@ var _ = Describe("controller", Ordered, func() {
 				}
 				return nil
 			}
-			EventuallyWithOffset(1, getValkeyClusterPodStatus, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, getValkeyClusterPodStatus, time.Minute, 15*time.Second).Should(Succeed())
 
 			By("validating that the status of the custom resource created is updated or not")
 			getStatus := func() error {
@@ -182,7 +182,7 @@ var _ = Describe("controller", Ordered, func() {
 
 		})
 		It("should have working cluster", func() {
-			EventuallyWithOffset(1, verifyClusterState("valkeycluster-sample", 1, 1), 2*time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, verifyClusterState("valkeycluster-sample", 1, 1), 2*time.Minute, 15*time.Second).Should(Succeed())
 		})
 		It("should scale up", func() {
 			cmd := exec.Command("kubectl",
@@ -205,6 +205,44 @@ var _ = Describe("controller", Ordered, func() {
 			_, err := utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 			EventuallyWithOffset(1, verifyClusterState("valkeycluster-sample", 2, 1), 6*time.Minute, 15*time.Second).Should(Succeed())
+			getPods := func() error {
+				cmd = exec.Command("kubectl", "get", "pods",
+					"-l", fmt.Sprintf("cache/name=%s,app.kubernetes.io/name=valkeyCluster-operator,app.kubernetes.io/managed-by=ValkeyClusterController", "valkeycluster-sample"),
+					"-o", "go-template={{ range .items }}"+
+						"{{ if not .metadata.deletionTimestamp }}"+
+						"{{ .metadata.name }}"+
+						"{{ \"\\n\" }}{{ end }}{{ end }}",
+					"-n", namespace,
+				)
+
+				podOutput, err := utils.Run(cmd)
+				ExpectWithOffset(2, err).NotTo(HaveOccurred())
+				podNames := utils.GetNonEmptyLines(string(podOutput))
+				if len(podNames) != 4 {
+					return fmt.Errorf("expect 4 cache pods running, but got %d", len(podNames))
+				}
+				return nil
+			}
+			Eventually(getPods, time.Minute, time.Second).Should(Succeed())
+			getPvc := func() error {
+				cmd = exec.Command("kubectl", "get", "pvc",
+					"-l", fmt.Sprintf("cache/name=%s,app.kubernetes.io/name=valkeyCluster-operator,app.kubernetes.io/managed-by=ValkeyClusterController", "valkeycluster-sample"),
+					"-o", "go-template={{ range .items }}"+
+						"{{ if not .metadata.deletionTimestamp }}"+
+						"{{ .metadata.name }}"+
+						"{{ \"\\n\" }}{{ end }}{{ end }}",
+					"-n", namespace,
+				)
+
+				pvcOutput, err := utils.Run(cmd)
+				ExpectWithOffset(2, err).NotTo(HaveOccurred())
+				pvcNames := utils.GetNonEmptyLines(string(pvcOutput))
+				if len(pvcNames) != 4 {
+					return fmt.Errorf("expect 4 PVCs, but got %d", len(pvcNames))
+				}
+				return nil
+			}
+			Eventually(getPvc, time.Minute, time.Second).Should(Succeed())
 		})
 	})
 })

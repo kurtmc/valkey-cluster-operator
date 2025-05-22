@@ -426,16 +426,28 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			return ctrl.Result{}, err
 		}
 
+		clusterNodesInLastSts := make([]*internalValkey.ClusterNode, 0)
 		slotsInShard := false
 		for _, cn := range clusterNodes {
 			if !strings.HasPrefix(cn.Pod, fmt.Sprintf("%s-%d-", valkeyCluster.Name, lastIdx)) {
 				continue
 			}
+			clusterNodesInLastSts = append(clusterNodesInLastSts, cn)
 			if cn.HasSlots() {
 				slotsInShard = true
 			}
 		}
 		if !slotsInShard {
+			// first we need to delete all node from cluster
+			for _, cn := range clusterNodesInLastSts {
+				log.Info(fmt.Sprintf("Removing %s from %s/%", cn.ID, valkeyCluster.Namespace, valkeyCluster.Name))
+				_, _, err := r.executeValkeyCli(ctx, valkeyCluster, []string{"--cluster", "del-node", "127.0.0.1:6379", cn.ID})
+				if err != nil {
+					log.Error(err, "Failed to remove cluster node")
+					return ctrl.Result{}, err
+				}
+			}
+
 			if err := r.Delete(ctx, &lastSts); err != nil {
 				log.Error(err, "Failed to delete StatfulSet", "StatefulSet", lastSts)
 				return ctrl.Result{}, err
@@ -821,6 +833,7 @@ func (r *ValkeyClusterReconciler) waitForPodsToBeAccessibleViaValkey(ctx context
 
 // This method can request a requeue. A nil value is considered nothing, if it's not nil the value is used to requeue
 func (r *ValkeyClusterReconciler) reconcileValkeySlots(ctx context.Context, valkeyCluster *cachev1alpha1.ValkeyCluster) (*ctrl.Result, error) {
+	logger := log.FromContext(ctx)
 	var result *ctrl.Result
 
 	clusterNodesForShard, err := r.buildClusterNodesForShard(ctx, valkeyCluster)
@@ -839,36 +852,14 @@ func (r *ValkeyClusterReconciler) reconcileValkeySlots(ctx context.Context, valk
 	}
 
 	for _, plan := range actionPlan {
-		// valkey-cli --cluster reshard 127.0.0.1:6379 --cluster-from 530e79a7306c62ce8edd1d1fd23ceb42f0b76529 --cluster-to c46b0932f83ee1fcf139397688421f3f2845af61 --cluster-slots 1 --cluster-yes
-		cmd := []string{
-			"sh",
-			"-c",
-			fmt.Sprintf("valkey-cli --cluster reshard 127.0.0.1:6379 --cluster-from %s --cluster-to %s --cluster-slots %d --cluster-yes", plan.FromID, plan.ToID, plan.Slots),
-		}
-
-		podName := fmt.Sprintf("%s-0-0", valkeyCluster.Name)
-
-		req := r.ClientSet.CoreV1().RESTClient().Post().Resource("pods").Name(podName).
-			Namespace(valkeyCluster.Namespace).SubResource("exec")
-		req.VersionedParams(&corev1.PodExecOptions{
-			Container: "valkey-cluster-node",
-			Command:   cmd,
-			Stdin:     false,
-			Stdout:    true,
-			Stderr:    true,
-			TTY:       false,
-		}, runtime.NewParameterCodec(r.Scheme))
-		exec, err := remotecommand.NewSPDYExecutor(r.RestConfig, "POST", req.URL())
+		logger.Info("%s/%s: Migrating %d slots from %s to %s", valkeyCluster.Namespace, valkeyCluster.Name, plan.Slots, plan.FromID, plan.ToID)
+		_, _, err := r.executeValkeyCli(ctx, valkeyCluster, []string{"--cluster", "reshard", "127.0.0.1:6379",
+			"--cluster-from", plan.FromID,
+			"--cluster-to", plan.ToID,
+			"--cluster-slots", fmt.Sprintf("%d", plan.Slots),
+			"--cluster-yes"})
 		if err != nil {
-			return result, fmt.Errorf("Failed to reshard: %v", err)
-		}
-		var stdout, stderr bytes.Buffer
-		err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
-			Stdout: &stdout,
-			Stderr: &stderr,
-		})
-		if err != nil {
-			return result, fmt.Errorf("Failed executing command: %s %s", stdout.String(), stderr.String())
+			return nil, err
 		}
 
 	}
@@ -1286,4 +1277,38 @@ func (r *ValkeyClusterReconciler) upsertConfigMap(ctx context.Context, valkeyClu
 
 func statefulSetSize(valkeyCluster *cachev1alpha1.ValkeyCluster) int32 {
 	return 1 + valkeyCluster.Spec.Replicas
+}
+
+func (r *ValkeyClusterReconciler) executeValkeyCli(ctx context.Context, valkeyCluster *cachev1alpha1.ValkeyCluster, args []string) (string, string, error) {
+	cmd := []string{
+		"sh",
+		"-c",
+		fmt.Sprintf("valkey-cli %s", strings.Join(args, " ")),
+	}
+
+	podName := fmt.Sprintf("%s-0-0", valkeyCluster.Name)
+
+	req := r.ClientSet.CoreV1().RESTClient().Post().Resource("pods").Name(podName).
+		Namespace(valkeyCluster.Namespace).SubResource("exec")
+	req.VersionedParams(&corev1.PodExecOptions{
+		Container: "valkey-cluster-node",
+		Command:   cmd,
+		Stdin:     false,
+		Stdout:    true,
+		Stderr:    true,
+		TTY:       false,
+	}, runtime.NewParameterCodec(r.Scheme))
+	exec, err := remotecommand.NewSPDYExecutor(r.RestConfig, "POST", req.URL())
+	if err != nil {
+		return "", "", fmt.Errorf("Failed to execute valkey-cli %s: %v", strings.Join(args, " "), err)
+	}
+	var stdout, stderr bytes.Buffer
+	err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("Failed executing command 'valkey-cli %s': stdout: %s, stderr: %s, err: %v", strings.Join(args, " "), stdout.String(), stderr.String(), err)
+	}
+	return stdout.String(), stderr.String(), nil
 }
