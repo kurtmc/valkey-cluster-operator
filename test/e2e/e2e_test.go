@@ -17,11 +17,7 @@ limitations under the License.
 package e2e
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -46,16 +42,20 @@ var _ = Describe("controller", Ordered, func() {
 
 	AfterAll(func() {
 		By("remove valkey cluster")
-		cmd := exec.Command("kubectl", "delete", "valkeycluster", "valkeycluster-sample",
+		cmd := exec.Command("kubectl", "delete", "--timeout=10s", "valkeycluster", "valkeycluster-sample",
 			"-n", namespace,
 		)
 		_, _ = utils.Run(cmd)
 
-		cmd = exec.Command("kubectl", "delete", "pvc",
+		cmd = exec.Command("kubectl", "delete", "--timeout=10s", "pvc",
 			"-l", fmt.Sprintf("cache/name=%s,app.kubernetes.io/name=valkeyCluster-operator,app.kubernetes.io/managed-by=ValkeyClusterController", "valkeycluster-sample"),
 			"-n", namespace,
 		)
+		_, _ = utils.Run(cmd)
 
+		cmd = exec.Command("kubectl", "delete", "--timeout=10s", "deployment", "valkey-cluster-operator-controller-manager",
+			"-n", namespace,
+		)
 		_, _ = utils.Run(cmd)
 	})
 
@@ -75,7 +75,8 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("deploying the controller-manager")
 			cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectimage))
-			_, err = utils.Run(cmd)
+			makeDeployOutput, err := utils.Run(cmd)
+			_, _ = fmt.Fprintf(GinkgoWriter, "make deploy: %s\n", makeDeployOutput)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 			By("validating that the controller-manager pod is running as expected")
