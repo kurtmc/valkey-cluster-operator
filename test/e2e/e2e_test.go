@@ -46,10 +46,10 @@ var _ = Describe("controller", Ordered, func() {
 
 	AfterAll(func() {
 		By("removing manager namespace")
-		cmd := exec.Command("kubectl", "delete", "--grace-period=1", "--timeout=5s", "ns", namespace)
+		cmd := exec.Command("kubectl", "delete", "--grace-period=1", "--timeout=60s", "ns", namespace)
 		_, _ = utils.Run(cmd)
 
-		if false {
+		if true {
 			kubectlProxy := exec.Command("kubectl", "proxy")
 			kubectlProxy.Env = append(os.Environ(), "GO111MODULE=on")
 			go func() {

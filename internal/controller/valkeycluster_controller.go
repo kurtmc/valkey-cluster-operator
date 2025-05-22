@@ -380,6 +380,17 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	}
 
+	// wait for all pods to be running and accessible via valkey-client
+	res, err := r.waitForPodsToBeAccessibleViaValkey(ctx, valkeyCluster)
+	if err != nil {
+		log.Error(err, "Failed to list pods", "ValkeyCluster.Namespace", valkeyCluster.Namespace, "ValkeyCluster.Name", valkeyCluster.Name)
+		return ctrl.Result{}, err
+	}
+	if res != nil {
+		// requeue request from wait function
+		return *res, nil
+	}
+
 	// Check if we need to remove a shard
 	stsList := &appsv1.StatefulSetList{}
 	listOpts := []client.ListOption{
@@ -482,48 +493,6 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 
-	// wait for all pods to be running and accessible via valkey-client
-	podList := &corev1.PodList{}
-	listOpts = []client.ListOption{
-		client.InNamespace(valkeyCluster.Namespace),
-		client.MatchingLabels(labelsForValkeyCluster(valkeyCluster.Name)),
-	}
-	if err = r.List(ctx, podList, listOpts...); err != nil {
-		log.Error(err, "Failed to list pods", "ValkeyCluster.Namespace", valkeyCluster.Namespace, "ValkeyCluster.Name", valkeyCluster.Name)
-		return ctrl.Result{}, err
-	}
-	for _, pod := range podList.Items {
-		if pod.Status.Phase != corev1.PodRunning {
-			log.Info("Pod not running", "Pod.Name", pod.Name, "Pod.Status", pod.Status.Phase)
-			return ctrl.Result{RequeueAfter: time.Minute}, nil
-		}
-
-		log.Info("Pod running", "Pod.Name", pod.Name, "Pod.Status", pod.Status.Phase)
-
-		isPodReady := false
-		for _, condition := range pod.Status.Conditions {
-			if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
-				isPodReady = true
-			}
-		}
-		if isPodReady {
-			client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{pod.Status.PodIP + ":6379"}, ForceSingleClient: true})
-			if err != nil {
-				log.Error(err, "Failed to create Valkey client")
-				return ctrl.Result{}, err
-			}
-			defer client.Close()
-			_, err = client.Do(ctx, client.B().ClusterNodes().Build()).ToString()
-			if err != nil {
-				log.Error(err, "Failed to get cluster nodes")
-				return ctrl.Result{}, err
-			}
-		} else {
-			log.Info("Pod not ready", "Pod.Name", pod.Name)
-			return ctrl.Result{RequeueAfter: time.Minute}, nil
-		}
-	}
-
 	clusterNodes, err := r.buildClusterNodes(ctx, valkeyCluster)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("Could not build cluster nodes: %v", err)
@@ -581,7 +550,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 				meta.SetStatusCondition(&valkeyCluster.Status.Conditions, metav1.Condition{Type: typeAvailableValkeyCluster,
 					Status: metav1.ConditionFalse, Reason: "Reconciling",
-					Message: fmt.Sprintf("Ran cluster meet operation on %s with %d pods", valkeyCluster.Name, len(podList.Items))})
+					Message: fmt.Sprintf("Ran cluster meet operation on %s with %d pods", valkeyCluster.Name, len(clusterNodes))})
 
 				if err := r.Status().Update(ctx, valkeyCluster); err != nil {
 					log.Error(err, "Failed to update ValkeyCluster status")
@@ -717,7 +686,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// RESHARDING
-	res, err := r.reconcileValkeySlots(ctx, valkeyCluster)
+	res, err = r.reconcileValkeySlots(ctx, valkeyCluster)
 	if err != nil {
 		log.Error(err, "Failed to reshard")
 		return ctrl.Result{}, err
@@ -803,6 +772,51 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *ValkeyClusterReconciler) waitForPodsToBeAccessibleViaValkey(ctx context.Context, valkeyCluster *cachev1alpha1.ValkeyCluster) (*ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	podList := &corev1.PodList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(valkeyCluster.Namespace),
+		client.MatchingLabels(labelsForValkeyCluster(valkeyCluster.Name)),
+	}
+	if err := r.List(ctx, podList, listOpts...); err != nil {
+		logger.Error(err, "Failed to list pods", "ValkeyCluster.Namespace", valkeyCluster.Namespace, "ValkeyCluster.Name", valkeyCluster.Name)
+		return nil, err
+	}
+	for _, pod := range podList.Items {
+		if pod.Status.Phase != corev1.PodRunning {
+			logger.Info("Pod not running", "Pod.Name", pod.Name, "Pod.Status", pod.Status.Phase)
+			return &ctrl.Result{RequeueAfter: time.Minute}, nil
+		}
+
+		logger.Info("Pod running", "Pod.Name", pod.Name, "Pod.Status", pod.Status.Phase)
+
+		isPodReady := false
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+				isPodReady = true
+			}
+		}
+		if isPodReady {
+			client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{pod.Status.PodIP + ":6379"}, ForceSingleClient: true})
+			if err != nil {
+				logger.Info("Could not create valkey client, requeing")
+				return &ctrl.Result{RequeueAfter: time.Minute}, nil
+			}
+			defer client.Close()
+			_, err = client.Do(ctx, client.B().ClusterNodes().Build()).ToString()
+			if err != nil {
+				logger.Info("Could not get cluster nodes requeing")
+				return &ctrl.Result{RequeueAfter: time.Minute}, nil
+			}
+		} else {
+			logger.Info("Pod not ready", "Pod.Name", pod.Name)
+			return &ctrl.Result{RequeueAfter: time.Minute}, nil
+		}
+	}
+	return nil, nil
 }
 
 // This method can request a requeue. A nil value is considered nothing, if it's not nil the value is used to requeue
