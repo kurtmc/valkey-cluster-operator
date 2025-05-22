@@ -2,8 +2,9 @@ package valkey
 
 import (
 	"fmt"
-	"github.com/stretchr/testify/assert"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestSlotRanges(t *testing.T) {
@@ -172,5 +173,209 @@ c46b0932f83ee1fcf139397688421f3f2845af61 10.9.22.107:6379@16379 master - 0 17476
 				assert.Equal(t, e.SlotRanges, actual[i].SlotRanges)
 			}
 		}
+	}
+}
+
+func TestGenerateReshardingPlan(t *testing.T) {
+	testcases := []struct {
+		clusterNodesForShard map[int][]*ClusterNode
+		desiredShards        int
+		plan                 []Reshard
+	}{
+		{
+			clusterNodesForShard: map[int][]*ClusterNode{
+				0: []*ClusterNode{
+					{
+						Pod:          "keyval-0-0",
+						IP:           "10.0.0.1",
+						ID:           "00000000000000000000",
+						MasterNodeID: "",
+						Flags:        []string{"master"},
+						SlotRanges:   []*ClusterSlotRange{{0, 5461}},
+					},
+					{
+						Pod:          "keyval-0-1",
+						IP:           "10.0.0.2",
+						ID:           "11111111111111111111",
+						MasterNodeID: "00000000000000000000",
+						Flags:        []string{"slave"},
+						SlotRanges:   []*ClusterSlotRange{},
+					},
+					{
+						Pod:          "keyval-0-2",
+						IP:           "10.0.0.3",
+						ID:           "33333333333333333333",
+						MasterNodeID: "00000000000000000000",
+						Flags:        []string{"slave"},
+						SlotRanges:   []*ClusterSlotRange{{}},
+					},
+				},
+				1: []*ClusterNode{
+					{
+						Pod:          "keyval-1-0",
+						IP:           "10.0.1.1",
+						ID:           "44444444444444444444",
+						MasterNodeID: "55555555555555555555",
+						Flags:        []string{"slave"},
+						SlotRanges:   []*ClusterSlotRange{},
+					},
+					{
+						Pod:          "keyval-1-1",
+						IP:           "10.0.1.2",
+						ID:           "55555555555555555555",
+						MasterNodeID: "",
+						Flags:        []string{"master"},
+						SlotRanges:   []*ClusterSlotRange{{5462, 10923}},
+					},
+					{
+						Pod:          "keyval-1-2",
+						IP:           "10.0.1.3",
+						ID:           "66666666666666666666",
+						MasterNodeID: "55555555555555555555",
+						Flags:        []string{"slave"},
+						SlotRanges:   []*ClusterSlotRange{{}},
+					},
+				},
+				2: []*ClusterNode{
+					{
+						Pod:          "keyval-2-0",
+						IP:           "10.0.3.1",
+						ID:           "77777777777777777777",
+						MasterNodeID: "99999999999999999999",
+						Flags:        []string{"slave"},
+						SlotRanges:   []*ClusterSlotRange{{}},
+					},
+					{
+						Pod:          "keyval-2-1",
+						IP:           "10.0.3.2",
+						ID:           "88888888888888888888",
+						MasterNodeID: "99999999999999999999",
+						Flags:        []string{"slave"},
+						SlotRanges:   []*ClusterSlotRange{},
+					},
+					{
+						Pod:          "keyval-2-2",
+						IP:           "10.0.3.3",
+						ID:           "99999999999999999999",
+						MasterNodeID: "",
+						Flags:        []string{"master"},
+						SlotRanges:   []*ClusterSlotRange{{10924, 16383}},
+					},
+				},
+			},
+			desiredShards: 2,
+			plan: []Reshard{
+				{
+					FromID: "99999999999999999999",
+					ToID:   "00000000000000000000",
+					Slots:  2730,
+				},
+				{
+					FromID: "99999999999999999999",
+					ToID:   "55555555555555555555",
+					Slots:  2730,
+				},
+			},
+		},
+		{
+			clusterNodesForShard: map[int][]*ClusterNode{
+				0: []*ClusterNode{
+					{
+						Pod:          "keyval-0-0",
+						IP:           "10.0.0.1",
+						ID:           "00000000000000000000",
+						MasterNodeID: "",
+						Flags:        []string{"master"},
+						SlotRanges:   []*ClusterSlotRange{{0, 8191}},
+					},
+					{
+						Pod:          "keyval-0-1",
+						IP:           "10.0.0.2",
+						ID:           "11111111111111111111",
+						MasterNodeID: "00000000000000000000",
+						Flags:        []string{"slave"},
+						SlotRanges:   []*ClusterSlotRange{},
+					},
+					{
+						Pod:          "keyval-0-2",
+						IP:           "10.0.0.3",
+						ID:           "33333333333333333333",
+						MasterNodeID: "00000000000000000000",
+						Flags:        []string{"slave"},
+						SlotRanges:   []*ClusterSlotRange{{}},
+					},
+				},
+				1: []*ClusterNode{
+					{
+						Pod:          "keyval-1-0",
+						IP:           "10.0.1.1",
+						ID:           "44444444444444444444",
+						MasterNodeID: "55555555555555555555",
+						Flags:        []string{"slave"},
+						SlotRanges:   []*ClusterSlotRange{},
+					},
+					{
+						Pod:          "keyval-1-1",
+						IP:           "10.0.1.2",
+						ID:           "55555555555555555555",
+						MasterNodeID: "",
+						Flags:        []string{"master"},
+						SlotRanges:   []*ClusterSlotRange{{8192, 16383}},
+					},
+					{
+						Pod:          "keyval-1-2",
+						IP:           "10.0.1.3",
+						ID:           "66666666666666666666",
+						MasterNodeID: "55555555555555555555",
+						Flags:        []string{"slave"},
+						SlotRanges:   []*ClusterSlotRange{{}},
+					},
+				},
+				2: []*ClusterNode{
+					{
+						Pod:          "keyval-2-0",
+						IP:           "10.0.3.1",
+						ID:           "77777777777777777777",
+						MasterNodeID: "99999999999999999999",
+						Flags:        []string{"slave"},
+						SlotRanges:   []*ClusterSlotRange{{}},
+					},
+					{
+						Pod:          "keyval-2-1",
+						IP:           "10.0.3.2",
+						ID:           "88888888888888888888",
+						MasterNodeID: "99999999999999999999",
+						Flags:        []string{"slave"},
+						SlotRanges:   []*ClusterSlotRange{},
+					},
+					{
+						Pod:          "keyval-2-2",
+						IP:           "10.0.3.3",
+						ID:           "99999999999999999999",
+						MasterNodeID: "",
+						Flags:        []string{"master"},
+						SlotRanges:   []*ClusterSlotRange{},
+					},
+				},
+			},
+			desiredShards: 3,
+			plan: []Reshard{
+				{
+					FromID: "00000000000000000000",
+					ToID:   "99999999999999999999",
+					Slots:  2731,
+				},
+				{
+					FromID: "55555555555555555555",
+					ToID:   "99999999999999999999",
+					Slots:  2731,
+				},
+			},
+		},
+	}
+	for _, tt := range testcases {
+		actual, err := GenerateReshardingPlan(tt.clusterNodesForShard, tt.desiredShards)
+		assert.NoError(t, err)
+		assert.Equal(t, tt.plan, actual)
 	}
 }

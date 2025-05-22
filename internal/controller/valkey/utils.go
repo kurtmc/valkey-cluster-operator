@@ -1,7 +1,9 @@
 package valkey
 
 import (
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -15,6 +17,11 @@ type ClusterNode struct {
 	MasterNodeID string
 	Flags        []string
 	SlotRanges   []*ClusterSlotRange
+}
+
+func (c *ClusterNode) String() string {
+	b, _ := json.Marshal(c)
+	return string(b)
 }
 
 func (c *ClusterNode) IsMaster() bool {
@@ -205,4 +212,109 @@ func ToStatusClusterNode(cn ClusterNode) cachev1alpha1.ValkeyClusterNode {
 		MasterNodeID: cn.MasterNodeID,
 		Flags:        cn.Flags,
 	}
+}
+
+func GenerateReshardingPlan(clusterNodesForShard map[int][]*ClusterNode, desiredShards int) ([]Reshard, error) {
+	primaries := map[int]*ClusterNode{}
+
+	for shardIdx, clusterNodes := range clusterNodesForShard {
+		for _, cn := range clusterNodes {
+			if cn.IsMaster() {
+				primaries[shardIdx] = cn
+			}
+		}
+	}
+
+	desiredSlotCounts := SlotCounts(int(desiredShards))
+	actualSlotCounts := []int{}
+	maxIdx := 0
+	for idx := range clusterNodesForShard {
+		if idx > maxIdx {
+			maxIdx = idx
+		}
+	}
+	for i := 0; i <= maxIdx; i++ {
+		for _, cn := range clusterNodesForShard[i] {
+			if cn.IsMaster() && cn.HasSlots() {
+				actualSlotCounts = append(actualSlotCounts, cn.SlotCount())
+			}
+		}
+	}
+
+	// pad with 0s
+	if len(desiredSlotCounts) < len(actualSlotCounts) {
+		for i := 0; i < len(actualSlotCounts)-len(desiredSlotCounts); i++ {
+			desiredSlotCounts = append(desiredSlotCounts, 0)
+		}
+	}
+	if len(desiredSlotCounts) > len(actualSlotCounts) {
+		for i := 0; i < len(desiredSlotCounts)-len(actualSlotCounts); i++ {
+			actualSlotCounts = append(actualSlotCounts, 0)
+		}
+	}
+
+	sum := 0
+	for _, c := range desiredSlotCounts {
+		sum = sum + c
+	}
+	if sum != 16384 {
+		return nil, fmt.Errorf("expected there to be 16384 total desired slots but got %v", desiredSlotCounts)
+	}
+	sum = 0
+	for _, c := range actualSlotCounts {
+		sum = sum + c
+	}
+	if sum != 16384 {
+		return nil, fmt.Errorf("expected there to be 16384 total actual slots but got %v", actualSlotCounts)
+	}
+
+	actionPlan := []Reshard{}
+	rid := map[string]int{}
+	receive := map[string]int{}
+	for i := range actualSlotCounts {
+		if actualSlotCounts[i] == desiredSlotCounts[i] {
+			//all is well
+		} else if actualSlotCounts[i] > desiredSlotCounts[i] {
+			// need to get rid of:
+			delta := actualSlotCounts[i] - desiredSlotCounts[i]
+			rid[primaries[i].ID] = delta
+
+		} else if actualSlotCounts[i] < desiredSlotCounts[i] {
+			// need to get:
+			delta := desiredSlotCounts[i] - actualSlotCounts[i]
+			receive[primaries[i].ID] = delta
+		}
+	}
+
+	for fromID, _ := range rid {
+		if rid[fromID] == 0 {
+			continue
+		}
+		for toID, receiveSlots := range receive {
+			if receiveSlots <= rid[fromID] {
+				actionPlan = append(actionPlan, Reshard{
+					FromID: fromID,
+					ToID:   toID,
+					Slots:  receiveSlots,
+				})
+				rid[fromID] = rid[fromID] - receiveSlots
+			} else {
+				actionPlan = append(actionPlan, Reshard{
+					FromID: fromID,
+					ToID:   toID,
+					Slots:  rid[fromID],
+				})
+				rid[fromID] = 0
+			}
+		}
+	}
+
+	sort.Slice(actionPlan, func(i, j int) bool {
+		if actionPlan[i].FromID == actionPlan[j].FromID {
+			return actionPlan[i].ToID < actionPlan[j].ToID
+		}
+		return actionPlan[i].FromID < actionPlan[j].FromID
+	})
+
+	return actionPlan, nil
 }

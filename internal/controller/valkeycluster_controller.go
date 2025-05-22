@@ -809,100 +809,19 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 func (r *ValkeyClusterReconciler) reconcileValkeySlots(ctx context.Context, valkeyCluster *cachev1alpha1.ValkeyCluster) (*ctrl.Result, error) {
 	var result *ctrl.Result
 
-	clusterNodes, err := r.buildClusterNodes(ctx, valkeyCluster)
+	clusterNodesForShard, err := r.buildClusterNodesForShard(ctx, valkeyCluster)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("Failed to build cluster nodes for shard: %v", err)
 	}
 
-	// find primary per shard and get slot count
-
-	re := regexp.MustCompile(fmt.Sprintf(`%s-(\d+)-(\d+)`, valkeyCluster.Name))
-
-	primaries := []*internalValkey.ClusterNode{}
-
-	clusterNodesForShard := make(map[int][]*internalValkey.ClusterNode)
-	for _, cn := range clusterNodes {
-		matches := re.FindAllStringSubmatch(cn.Pod, -1)
-		shardIdx, err := strconv.Atoi(matches[0][1])
-		if err != nil {
-			return result, fmt.Errorf("could not parse shard index: %v", err)
-		}
-		if _, ok := clusterNodesForShard[shardIdx]; !ok {
-			clusterNodesForShard[shardIdx] = make([]*internalValkey.ClusterNode, 0)
-		}
-		clusterNodesForShard[shardIdx] = append(clusterNodesForShard[shardIdx], cn)
-	}
-
-	desiredSlotCounts := internalValkey.SlotCounts(int(valkeyCluster.Spec.Shards))
-	actualSlotCounts := []int{}
-	maxIdx := 0
-	for idx := range clusterNodesForShard {
-		if idx > maxIdx {
-			maxIdx = idx
-		}
-	}
-	for i := 0; i <= maxIdx; i++ {
-		for _, cn := range clusterNodesForShard[i] {
-			if cn.IsMaster() && cn.HasSlots() {
-				primaries = append(primaries, cn)
-				actualSlotCounts = append(actualSlotCounts, cn.SlotCount())
-			}
-		}
-	}
-
-	// pad with 0s
-	if len(desiredSlotCounts) < len(actualSlotCounts) {
+	if len(clusterNodesForShard) != int(valkeyCluster.Spec.Shards) {
+		// scaling action should trigger requeue
 		result = &ctrl.Result{Requeue: true}
-		for i := 0; i < len(actualSlotCounts)-len(desiredSlotCounts); i++ {
-			desiredSlotCounts = append(desiredSlotCounts, 0)
-		}
-	}
-	if len(desiredSlotCounts) > len(actualSlotCounts) {
-		result = &ctrl.Result{Requeue: true}
-		for i := 0; i < len(desiredSlotCounts)-len(actualSlotCounts); i++ {
-			actualSlotCounts = append(actualSlotCounts, 0)
-		}
 	}
 
-	actionPlan := []internalValkey.Reshard{}
-	rid := map[string]int{}
-	receive := map[string]int{}
-	for i := range actualSlotCounts {
-		if actualSlotCounts[i] == desiredSlotCounts[i] {
-			//all is well
-		} else if actualSlotCounts[i] > desiredSlotCounts[i] {
-			// need to get rid of:
-			delta := actualSlotCounts[i] - desiredSlotCounts[i]
-			rid[primaries[i].ID] = delta
-
-		} else if actualSlotCounts[i] < desiredSlotCounts[i] {
-			// need to get:
-			delta := desiredSlotCounts[i] - actualSlotCounts[i]
-			receive[primaries[i].ID] = delta
-		}
-	}
-
-	for fromID, ridSlots := range rid {
-		if ridSlots == 0 {
-			continue
-		}
-		for toID, receiveSlots := range receive {
-			if receiveSlots <= ridSlots {
-				actionPlan = append(actionPlan, internalValkey.Reshard{
-					FromID: fromID,
-					ToID:   toID,
-					Slots:  receiveSlots,
-				})
-				rid[fromID] = rid[fromID] - receiveSlots
-			} else {
-				actionPlan = append(actionPlan, internalValkey.Reshard{
-					FromID: fromID,
-					ToID:   toID,
-					Slots:  ridSlots,
-				})
-				rid[fromID] = 0
-			}
-		}
+	actionPlan, err := internalValkey.GenerateReshardingPlan(clusterNodesForShard, int(valkeyCluster.Spec.Shards))
+	if err != nil {
+		return result, fmt.Errorf("Failed to build action plan: %v", err)
 	}
 
 	for _, plan := range actionPlan {
