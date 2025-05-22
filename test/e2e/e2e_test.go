@@ -45,45 +45,18 @@ var _ = Describe("controller", Ordered, func() {
 	})
 
 	AfterAll(func() {
-		By("removing manager namespace")
-		cmd := exec.Command("kubectl", "delete", "--grace-period=1", "--timeout=20s", "ns", namespace)
+		By("remove valkey cluster")
+		cmd := exec.Command("kubectl", "delete", "valkeycluster", "valkeycluster-sample",
+			"-n", namespace,
+		)
 		_, _ = utils.Run(cmd)
 
-		if true {
-			kubectlProxy := exec.Command("kubectl", "proxy")
-			kubectlProxy.Env = append(os.Environ(), "GO111MODULE=on")
-			go func() {
-				err := kubectlProxy.Start()
-				if err != nil {
-					panic(err)
-				}
-			}()
-			defer func() {
-				err := kubectlProxy.Process.Kill()
-				if err != nil {
-					panic(err)
-				}
-			}()
-			time.Sleep(1 * time.Second)
+		cmd = exec.Command("kubectl", "delete", "pvc",
+			"-l", fmt.Sprintf("cache/name=%s,app.kubernetes.io/name=valkeyCluster-operator,app.kubernetes.io/managed-by=ValkeyClusterController", "valkeycluster-sample"),
+			"-n", namespace,
+		)
 
-			cmd = exec.Command("kubectl", "get", "namespace", namespace, "-o", "json")
-			namespaceJson, _ := utils.Run(cmd)
-			nsObj := make(map[string]interface{})
-			json.Unmarshal(namespaceJson, &nsObj)
-			nsObj["spec"] = make(map[string][]interface{})
-			nsObj["spec"].(map[string][]interface{})["finalizers"] = make([]interface{}, 0)
-
-			b, _ := json.Marshal(nsObj)
-			buf := bytes.NewBuffer(b)
-			req, _ := http.NewRequest("PUT", fmt.Sprintf("http://127.0.0.1:8001/api/v1/namespaces/%s/finalize", namespace), buf)
-			req.Header.Set("Content-Type", "application/json")
-
-			client := &http.Client{}
-			resp, err := client.Do(req)
-			if err == nil {
-				defer resp.Body.Close()
-			}
-		}
+		_, _ = utils.Run(cmd)
 	})
 
 	Context("Operator", func() {
