@@ -679,8 +679,22 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 				}
 			}
 		} else {
-			for idx, cn := range clusterNodesForShard {
-				if idx == 0 {
+			// Pick the master node to set all other nodes to replicate from
+			masterCount := 0
+			for _, cn := range clusterNodesForShard {
+				if cn.IsMaster() {
+					masterCount++
+					primary = cn
+				}
+			}
+			if masterCount == 0 {
+				err := fmt.Errorf("%s/%s shard %d There are no master nodes in the shard", valkeyCluster.Namespace, valkeyCluster.Name, shardIdx)
+				log.Error(err, "No masters in shard, invalid state")
+				return ctrl.Result{}, err
+			}
+
+			for _, cn := range clusterNodesForShard {
+				if cn.ID == primary.ID {
 					continue
 				}
 				client, err := valkey.NewClient(valkey.ClientOption{InitAddress: []string{cn.IP + ":6379"}, ForceSingleClient: true})
@@ -688,7 +702,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 					log.Error(err, "Failed to get client")
 					return ctrl.Result{}, err
 				}
-				err = client.Do(ctx, client.B().ClusterReplicate().NodeId(clusterNodesForShard[0].ID).Build()).Error()
+				err = client.Do(ctx, client.B().ClusterReplicate().NodeId(primary.ID).Build()).Error()
 				if err != nil {
 					log.Error(err, "Failed to setup replication")
 					return ctrl.Result{}, err
@@ -852,7 +866,7 @@ func (r *ValkeyClusterReconciler) reconcileValkeySlots(ctx context.Context, valk
 	}
 
 	for _, plan := range actionPlan {
-		logger.Info("%s/%s: Migrating %d slots from %s to %s", valkeyCluster.Namespace, valkeyCluster.Name, plan.Slots, plan.FromID, plan.ToID)
+		logger.Info(fmt.Sprintf("%s/%s: Migrating %d slots from %s to %s", valkeyCluster.Namespace, valkeyCluster.Name, plan.Slots, plan.FromID, plan.ToID))
 		_, _, err := r.executeValkeyCli(ctx, valkeyCluster, []string{"--cluster", "reshard", "127.0.0.1:6379",
 			"--cluster-from", plan.FromID,
 			"--cluster-to", plan.ToID,
