@@ -18,14 +18,19 @@ import (
 	"context"
 	"dagger/valkey-cluster-operator/internal/dagger"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
 	"github.com/blang/semver/v4"
+	"gopkg.in/yaml.v3"
+	"math/rand/v2"
 )
 
-type ValkeyClusterOperator struct{}
+type ValkeyClusterOperator struct {
+	kubeconfig *KubeConfig
+}
 
 // Returns a container that echoes whatever string argument is provided
 func (m *ValkeyClusterOperator) ContainerEcho(stringArg string) *dagger.Container {
@@ -65,9 +70,9 @@ func (m *ValkeyClusterOperator) BuildManager(
 		WithEnvVariable("CGO_ENABLED", "0").
 		WithEnvVariable("GOOS", goos).
 		WithEnvVariable("GOARCH", goarch).
-		WithMountedCache("/go/pkg/mod", dag.CacheVolume("go-mod-124")).
+		WithMountedCache("/go/pkg/mod", dag.CacheVolume("go-mod-124-"+string(platform))).
 		WithEnvVariable("GOMODCACHE", "/go/pkg/mod").
-		WithMountedCache("/go/build-cache", dag.CacheVolume("go-build-124")).
+		WithMountedCache("/go/build-cache", dag.CacheVolume("go-build-124-"+string(platform))).
 		WithEnvVariable("GOCACHE", "/go/build-cache").
 		WithExec([]string{"go", "mod", "download"}).
 		WithExec([]string{"go", "build", "-o", "manager", "cmd/main.go"})
@@ -129,6 +134,27 @@ func (m *ValkeyClusterOperator) Build(
 	return platformVariants, nil
 }
 
+// Build the valkey container
+func (m *ValkeyClusterOperator) BuildValkeyContainerImage(
+	ctx context.Context,
+	// +defaultPath="/"
+	source *dagger.Directory,
+) ([]*dagger.Container, error) {
+
+	var platforms = []dagger.Platform{
+		"linux/amd64", // a.k.a. x86_64
+		"linux/arm64", // a.k.a. aarch64
+	}
+
+	platformVariants := make([]*dagger.Container, 0, len(platforms))
+	for _, platform := range platforms {
+		ctr := source.DockerBuild(dagger.DirectoryDockerBuildOpts{Platform: platform, Dockerfile: "Dockerfile.valkey"})
+		platformVariants = append(platformVariants, ctr)
+	}
+
+	return platformVariants, nil
+}
+
 // Unit Tests
 func (m *ValkeyClusterOperator) UnitTest(
 	ctx context.Context,
@@ -146,6 +172,42 @@ func (m *ValkeyClusterOperator) UnitTest(
 		WithMountedCache("/go/build-cache", dag.CacheVolume("go-build-124")).
 		WithEnvVariable("GOCACHE", "/go/build-cache").
 		WithExec([]string{"make", "test"}).Stdout(ctx)
+}
+
+// Start Kind
+func (m *ValkeyClusterOperator) StartKind(
+	ctx context.Context,
+	// +defaultPath="/"
+	source *dagger.Directory,
+) (string, error) {
+
+	return dag.Container().
+		From("golang:1.24").
+		WithExec([]string{"apt", "update"}).
+		WithExec([]string{"apt", "install", "-y", "docker"}).
+		WithMountedCache("/go/pkg/mod", dag.CacheVolume("go-mod-124")).
+		WithEnvVariable("GOMODCACHE", "/go/pkg/mod").
+		WithMountedCache("/go/build-cache", dag.CacheVolume("go-build-124")).
+		WithEnvVariable("GOCACHE", "/go/build-cache").
+		WithExec([]string{"go", "install", "sigs.k8s.io/kind@v0.29.0"}).
+		WithExec([]string{"kind", "create", "cluster"}).Stdout(ctx)
+}
+
+// E2E Test
+func (m *ValkeyClusterOperator) E2eTest(
+	ctx context.Context,
+	// +defaultPath="/"
+	source *dagger.Directory,
+	sock *dagger.Socket,
+) (string, error) {
+
+	container, err := m.BuildTestEnv(ctx, source, sock)
+	if err != nil {
+		return "", err
+	}
+
+	return container.
+		WithExec([]string{"make", "test-e2e"}).Stdout(ctx)
 }
 
 func getNewImageTag() (string, error) {
@@ -188,4 +250,157 @@ func getNewImageTag() (string, error) {
 	}
 	newest.IncrementPatch()
 	return "v" + newest.String(), nil
+}
+
+func getKubectlRelease() (string, error) {
+	resp, err := http.Get("https://dl.k8s.io/release/stable.txt")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	b, err := io.ReadAll(resp.Body)
+	return string(b), err
+}
+
+func (m *ValkeyClusterOperator) BuildAndLoadLocally(
+	ctx context.Context,
+	// +defaultPath="/"
+	source *dagger.Directory,
+	sock *dagger.Socket,
+) error {
+	platformVariants, err := m.Build(ctx, source)
+	if err != nil {
+		return err
+	}
+
+	for _, ctr := range platformVariants {
+		dockerCli := dag.Container().
+			From("docker:cli").
+			WithUnixSocket("/var/run/docker.sock", sock).
+			WithMountedFile("image.tar", ctr.AsTarball())
+
+		// Load the image from the tarball
+		out, err := dockerCli.
+			WithExec([]string{"docker", "load", "-i", "image.tar"}).
+			Stdout(ctx)
+		if err != nil {
+			return err
+		}
+
+		// Add the tag to the image
+		platform, err := ctr.Platform(ctx)
+		if err != nil {
+			return err
+		}
+		tag := strings.ReplaceAll(string(platform), "/", "-")
+		image := strings.TrimSpace(strings.SplitN(out, ":", 2)[1])
+		_, err = dockerCli.
+			WithExec([]string{"docker", "tag", image, "valkey-cluster-operator:" + tag}).
+			Sync(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	platformVariants, err = m.BuildValkeyContainerImage(ctx, source)
+	if err != nil {
+		return err
+	}
+
+	for _, ctr := range platformVariants {
+		dockerCli := dag.Container().
+			From("docker:cli").
+			WithUnixSocket("/var/run/docker.sock", sock).
+			WithMountedFile("image.tar", ctr.AsTarball())
+
+		// Load the image from the tarball
+		out, err := dockerCli.
+			WithExec([]string{"docker", "load", "-i", "image.tar"}).
+			Stdout(ctx)
+		if err != nil {
+			return err
+		}
+
+		// Add the tag to the image
+		platform, err := ctr.Platform(ctx)
+		if err != nil {
+			return err
+		}
+		tag := strings.ReplaceAll(string(platform), "/", "-")
+		image := strings.TrimSpace(strings.SplitN(out, ":", 2)[1])
+		_, err = dockerCli.
+			WithExec([]string{"docker", "tag", image, "valkey:" + tag}).
+			Sync(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *ValkeyClusterOperator) BuildTestEnv(
+	ctx context.Context,
+	// +defaultPath="/"
+	source *dagger.Directory,
+	sock *dagger.Socket,
+) (*dagger.Container, error) {
+
+	err := m.BuildAndLoadLocally(ctx, source, sock)
+	if err != nil {
+		return nil, err
+	}
+
+	goCache := dag.CacheVolume("go")
+	goModCache := dag.CacheVolume("go-mod")
+
+	kubectlRelease, err := getKubectlRelease()
+	if err != nil {
+		return nil, err
+	}
+
+	container := dag.Container().
+		From("golang:1.24").
+		WithUnixSocket("/var/run/docker.sock", sock).
+		WithExec([]string{"apt", "update"}).
+		WithExec([]string{"apt", "install", "-y", "docker.io", "jq"}).
+		WithExec([]string{"curl", "-L", "-o", "/usr/local/bin/kubectl", "https://dl.k8s.io/release/" + kubectlRelease + "/bin/linux/amd64/kubectl"}).
+		WithExec([]string{"chmod", "+x", "/usr/local/bin/kubectl"}).
+		WithMountedCache("/root/.cache/go-build", goCache).
+		WithMountedCache("/root/go/pkg/mod", goModCache).
+		WithExec([]string{"go", "install", "sigs.k8s.io/kind@v0.29.0"}).
+		WithExec([]string{"echo", fmt.Sprintf("%d", rand.Int64N(99999999))}).
+		WithExec([]string{"kind", "create", "cluster"}, dagger.ContainerWithExecOpts{Expect: dagger.ReturnTypeAny}).
+		WithExec([]string{"kind", "load", "docker-image", "valkey-cluster-operator:linux-amd64"}, dagger.ContainerWithExecOpts{Expect: dagger.ReturnTypeAny}).
+		WithDirectory("/src", source).
+		WithWorkdir("/src")
+
+	daggerEngineContainerName, _ := container.WithExec([]string{"bash", "-c", `docker ps --format '{{json .}}' | jq -r '. | select(.Image|startswith("registry.dagger.io/engine:")) | .Names'`}).Stdout(ctx)
+	daggerEngineContainerName = strings.TrimSpace(daggerEngineContainerName)
+	container.WithExec([]string{"bash", "-c", "docker network connect kind " + daggerEngineContainerName + " || true"}).Stdout(ctx)
+
+	data, _ := container.WithExec([]string{"kind", "get", "kubeconfig"}).Stdout(ctx)
+
+	kindControlPlainContainerID, _ := container.WithExec([]string{"bash", "-c", `docker ps --format '{{json .}}' | jq -r '. | select(.Names=="kind-control-plane") | .ID'`}).Stdout(ctx)
+	kindControlPlainContainerID = strings.TrimSpace(kindControlPlainContainerID)
+	kindControlPlainContainerIP, _ := container.WithExec([]string{"bash", "-c", `docker inspect ` + kindControlPlainContainerID + ` | jq -r '.[0].NetworkSettings.Networks.kind.IPAddress'`}).Stdout(ctx)
+	kindControlPlainContainerIP = strings.TrimSpace(kindControlPlainContainerIP)
+
+	kubeConfig := KubeConfig{}
+	_ = yaml.Unmarshal([]byte(data), &kubeConfig)
+
+	kubeConfig.Clusters[0].Cluster.Server = "https://" + kindControlPlainContainerIP + ":6443"
+
+	m.kubeconfig = &kubeConfig
+
+	kubeConfigData, err := yaml.Marshal(kubeConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	return container.
+		WithNewFile("/root/.kube/config", string(kubeConfigData)).
+		WithEnvVariable("KUBEPATCH_HOST", "https://"+kindControlPlainContainerIP+":6443").
+		WithEnvVariable("KUBEPATCH_CLUSTER_CA_CERTIFICATE", kubeConfig.Clusters[0].Cluster.CertificateAuthorityData).
+		WithEnvVariable("KUBEPATCH_CLIENT_CERTIFICATE", kubeConfig.Users[0].User.ClientCertificateData).
+		WithEnvVariable("KUBEPATCH_CLIENT_KEY", kubeConfig.Users[0].User.ClientKeyData), nil
 }

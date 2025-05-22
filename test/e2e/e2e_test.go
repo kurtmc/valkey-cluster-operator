@@ -24,12 +24,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"golang.org/x/exp/rand"
 
 	"github.com/kurtmc/valkey-cluster-operator/internal/controller/valkey"
 	"github.com/kurtmc/valkey-cluster-operator/test/utils"
@@ -91,20 +91,10 @@ var _ = Describe("controller", Ordered, func() {
 			projectDir, _ := utils.GetProjectDir()
 
 			// projectimage stores the name of the image used in the example
-			var projectimage = fmt.Sprintf("quay.io/kurtmcalpine/valkey-cluster-operator:test-%d", rand.Intn(10000))
-
-			By("building the manager(Operator) image")
-			// TODO: maybe push the image?
-			cmd := exec.Command("make", "docker-buildx", "docker-push", fmt.Sprintf("IMG=%s", projectimage), "PLATFORMS=linux/amd64")
-			_, _ = utils.Run(cmd)
-			// ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
-			By("loading the the manager(Operator) image on Kind")
-			// err = utils.LoadImageToKindClusterWithName(projectimage)
-			// ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			var projectimage = fmt.Sprintf("valkey-cluster-operator:%s-%s", runtime.GOOS, runtime.GOARCH)
 
 			By("installing CRDs")
-			cmd = exec.Command("make", "install")
+			cmd := exec.Command("make", "install")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
@@ -151,7 +141,7 @@ var _ = Describe("controller", Ordered, func() {
 			By("creating an instance of the ValkeyCluster Operand(CR)")
 			EventuallyWithOffset(1, func() error {
 				cmd = exec.Command("kubectl", "apply", "-f", filepath.Join(projectDir,
-					"config/samples/cache_v1alpha1_valkeycluster.yaml"), "-n", namespace)
+					"config/samples/cache_v1alpha1_valkeycluster_kind_e2e.yaml"), "-n", namespace)
 				_, err = utils.Run(cmd)
 				return err
 			}, time.Minute, time.Second).Should(Succeed())

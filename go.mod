@@ -9,6 +9,7 @@ require (
 	github.com/onsi/gomega v1.36.2
 	github.com/stretchr/testify v1.9.0
 	github.com/valkey-io/valkey-go v1.0.56
+	golang.org/x/exp v0.0.0-20230515195305-f3d0a9c9a5cc
 	k8s.io/api v0.31.0
 	k8s.io/apimachinery v0.31.0
 	k8s.io/client-go v0.31.0
@@ -76,7 +77,6 @@ require (
 	go.opentelemetry.io/proto/otlp v1.3.1 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.26.0 // indirect
-	golang.org/x/exp v0.0.0-20230515195305-f3d0a9c9a5cc // indirect
 	golang.org/x/net v0.37.0 // indirect
 	golang.org/x/oauth2 v0.21.0 // indirect
 	golang.org/x/sync v0.12.0 // indirect
