@@ -129,6 +129,25 @@ func (m *ValkeyClusterOperator) Build(
 	return platformVariants, nil
 }
 
+// Unit Tests
+func (m *ValkeyClusterOperator) UnitTest(
+	ctx context.Context,
+	// +defaultPath="/"
+	source *dagger.Directory,
+) (string, error) {
+
+	return dag.Container().
+		From("golang:1.24").
+		WithWorkdir("/workspace").
+		WithDirectory("/workspace", source).
+		WithMountedCache("/workspace-bin", dag.CacheVolume("workspace-bin")).
+		WithMountedCache("/go/pkg/mod", dag.CacheVolume("go-mod-124")).
+		WithEnvVariable("GOMODCACHE", "/go/pkg/mod").
+		WithMountedCache("/go/build-cache", dag.CacheVolume("go-build-124")).
+		WithEnvVariable("GOCACHE", "/go/build-cache").
+		WithExec([]string{"make", "test"}).Stdout(ctx)
+}
+
 func getNewImageTag() (string, error) {
 	type TagList struct {
 		Name string   `json:"name"`
