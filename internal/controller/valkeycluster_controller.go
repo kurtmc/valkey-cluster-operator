@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -1186,88 +1187,126 @@ func (r *ValkeyClusterReconciler) statefulSet(name string, size int32, valkeyClu
 						},
 						FSGroup: &[]int64{1009}[0],
 					},
-					Containers: []corev1.Container{{
-						Image:           image,
-						Name:            "valkey-cluster-node",
-						ImagePullPolicy: corev1.PullIfNotPresent,
-						Resources:       *valkeyCluster.Spec.Resources,
+					Containers: []corev1.Container{
+						{
+							Image:           image,
+							Name:            "valkey-cluster-node",
+							ImagePullPolicy: corev1.PullIfNotPresent,
+							Resources:       *valkeyCluster.Spec.Resources,
 
-						// Ensure restrictive context for the container
-						// More info: https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted
-						SecurityContext: &corev1.SecurityContext{
-							// WARNING: Ensure that the image used defines an UserID in the Dockerfile
-							// otherwise the Pod will not run and will fail with "container has runAsNonRoot and image has non-numeric user"".
-							// If you want your workloads admitted in namespaces enforced with the restricted mode in OpenShift/OKD vendors
-							// then, you MUST ensure that the Dockerfile defines a User ID OR you MUST leave the "RunAsNonRoot" and
-							// "RunAsUser" fields empty.
-							RunAsNonRoot: &[]bool{true}[0],
-							// The valkeyCluster image does not use a non-zero numeric user as the default user.
-							// Due to RunAsNonRoot field being set to true, we need to force the user in the
-							// container to a non-zero numeric user. We do this using the RunAsUser field.
-							// However, if you are looking to provide solution for K8s vendors like OpenShift
-							// be aware that you cannot run under its restricted-v2 SCC if you set this value.
-							RunAsUser:                &[]int64{1001}[0],
-							AllowPrivilegeEscalation: &[]bool{false}[0],
-							Capabilities: &corev1.Capabilities{
-								Drop: []corev1.Capability{
-									"ALL",
-								},
-							},
-						},
-						Ports: []corev1.ContainerPort{
-							{
-								ContainerPort: 6379,
-								Name:          "valkey-tcp",
-							},
-							{
-								ContainerPort: 16379,
-								Name:          "valkey-bus",
-							},
-						},
-						Lifecycle: &corev1.Lifecycle{
-							PreStop: &corev1.LifecycleHandler{
-								Exec: &corev1.ExecAction{
-									Command: []string{"/bin/sh", "/scripts/pre_stop.sh"},
-								},
-							},
-						},
-						ReadinessProbe: &corev1.Probe{
-							ProbeHandler: corev1.ProbeHandler{
-								TCPSocket: &corev1.TCPSocketAction{
-									Port: intstr.FromInt(6379),
-								},
-							},
-						},
-						LivenessProbe: &corev1.Probe{
-							ProbeHandler: corev1.ProbeHandler{
-								TCPSocket: &corev1.TCPSocketAction{
-									Port: intstr.FromInt(6379),
-								},
-							},
-						},
-						Env: []corev1.EnvVar{
-							{
-								Name: "POD_IP",
-								ValueFrom: &corev1.EnvVarSource{
-									FieldRef: &corev1.ObjectFieldSelector{
-										FieldPath: "status.podIP",
+							// Ensure restrictive context for the container
+							// More info: https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted
+							SecurityContext: &corev1.SecurityContext{
+								// WARNING: Ensure that the image used defines an UserID in the Dockerfile
+								// otherwise the Pod will not run and will fail with "container has runAsNonRoot and image has non-numeric user"".
+								// If you want your workloads admitted in namespaces enforced with the restricted mode in OpenShift/OKD vendors
+								// then, you MUST ensure that the Dockerfile defines a User ID OR you MUST leave the "RunAsNonRoot" and
+								// "RunAsUser" fields empty.
+								RunAsNonRoot: &[]bool{true}[0],
+								// The valkeyCluster image does not use a non-zero numeric user as the default user.
+								// Due to RunAsNonRoot field being set to true, we need to force the user in the
+								// container to a non-zero numeric user. We do this using the RunAsUser field.
+								// However, if you are looking to provide solution for K8s vendors like OpenShift
+								// be aware that you cannot run under its restricted-v2 SCC if you set this value.
+								RunAsUser:                &[]int64{1001}[0],
+								AllowPrivilegeEscalation: &[]bool{false}[0],
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{
+										"ALL",
 									},
 								},
 							},
-						},
-						WorkingDir: "/data",
-						Command:    []string{"sh", "-c", `echo -e "port 6379\ncluster-enabled yes\ncluster-config-file nodes.conf\ncluster-node-timeout 5000\nappendonly yes\nprotected-mode no" > valkey.conf; exec valkey-server ./valkey.conf --cluster-announce-ip $POD_IP`},
-						VolumeMounts: []corev1.VolumeMount{
-							{
-								Name:      "valkey-data",
-								MountPath: "/data",
+							Ports: []corev1.ContainerPort{
+								{
+									ContainerPort: 6379,
+									Name:          "valkey-tcp",
+								},
+								{
+									ContainerPort: 16379,
+									Name:          "valkey-bus",
+								},
 							},
-							{
-								Name:      "valkey-configmap",
-								MountPath: "/scripts",
+							Lifecycle: &corev1.Lifecycle{
+								PreStop: &corev1.LifecycleHandler{
+									Exec: &corev1.ExecAction{
+										Command: []string{"/bin/sh", "/scripts/pre_stop.sh"},
+									},
+								},
+							},
+							ReadinessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									TCPSocket: &corev1.TCPSocketAction{
+										Port: intstr.FromInt(6379),
+									},
+								},
+							},
+							LivenessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									TCPSocket: &corev1.TCPSocketAction{
+										Port: intstr.FromInt(6379),
+									},
+								},
+							},
+							Env: []corev1.EnvVar{
+								{
+									Name: "POD_IP",
+									ValueFrom: &corev1.EnvVarSource{
+										FieldRef: &corev1.ObjectFieldSelector{
+											FieldPath: "status.podIP",
+										},
+									},
+								},
+							},
+							WorkingDir: "/data",
+							Command:    []string{"sh", "-c", `echo -e "port 6379\ncluster-enabled yes\ncluster-config-file nodes.conf\ncluster-node-timeout 5000\nappendonly yes\nprotected-mode no" > valkey.conf; exec valkey-server ./valkey.conf --cluster-announce-ip $POD_IP`},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "valkey-data",
+									MountPath: "/data",
+								},
+								{
+									Name:      "valkey-configmap",
+									MountPath: "/scripts",
+								},
 							},
 						},
-					}},
+						{
+							Image:           "quay.io/oliver006/redis_exporter:v1.73.0-alpine",
+							Name:            "valkey-exporter",
+							ImagePullPolicy: corev1.PullIfNotPresent,
+							Resources: *&corev1.ResourceRequirements{
+								Limits: map[corev1.ResourceName]resource.Quantity{
+									corev1.ResourceCPU:    resource.MustParse("100m"),
+									corev1.ResourceMemory: resource.MustParse("64Mi"),
+								},
+								Requests: map[corev1.ResourceName]resource.Quantity{
+									corev1.ResourceCPU:    resource.MustParse("100m"),
+									corev1.ResourceMemory: resource.MustParse("64Mi"),
+								},
+							},
+							Ports: []corev1.ContainerPort{
+								{
+									ContainerPort: 9121,
+									Name:          "metrivs",
+								},
+							},
+							ReadinessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									TCPSocket: &corev1.TCPSocketAction{
+										Port: intstr.FromInt(9121),
+									},
+								},
+							},
+							LivenessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									TCPSocket: &corev1.TCPSocketAction{
+										Port: intstr.FromInt(9121),
+									},
+								},
+							},
+							Args: []string{"-is-cluster"},
+						},
+					},
 					Volumes: []corev1.Volume{
 						{
 							Name: "valkey-configmap",
