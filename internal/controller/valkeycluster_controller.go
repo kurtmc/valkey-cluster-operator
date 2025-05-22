@@ -721,6 +721,92 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return *res, nil
 	}
 
+	// Check if we need to remove a PVCs
+	pvcList := &corev1.PersistentVolumeClaimList{}
+	listOpts = []client.ListOption{
+		client.InNamespace(valkeyCluster.Namespace),
+		client.MatchingLabels(labelsForValkeyCluster(valkeyCluster.Name)),
+	}
+	if err = r.List(ctx, pvcList, listOpts...); err != nil {
+		log.Error(err, "Failed to list PersistentVolumeClaims", "ValkeyCluster.Namespace", valkeyCluster.Namespace, "ValkeyCluster.Name", valkeyCluster.Name)
+		return ctrl.Result{}, err
+	}
+	if len(pvcList.Items) > int(valkeyCluster.Spec.Shards+(valkeyCluster.Spec.Shards*valkeyCluster.Spec.Replicas)) {
+		// ok we need to delete some PVCs but only if the corresponding StatefulSet does not exist
+		stsList := &appsv1.StatefulSetList{}
+		listOpts := []client.ListOption{
+			client.InNamespace(valkeyCluster.Namespace),
+			client.MatchingLabels(labelsForValkeyCluster(valkeyCluster.Name)),
+		}
+		if err = r.List(ctx, stsList, listOpts...); err != nil {
+			log.Error(err, "Failed to list StatefulSets", "ValkeyCluster.Namespace", valkeyCluster.Namespace, "ValkeyCluster.Name", valkeyCluster.Name)
+			return ctrl.Result{}, err
+		}
+
+		pvcsToDelete := []corev1.PersistentVolumeClaim{}
+		for _, pvc := range pvcList.Items {
+			for _, sts := range stsList.Items {
+				if strings.HasPrefix(pvc.Name, fmt.Sprintf("valkey-data-%s-", sts.Name)) {
+					pvcsToDelete = append(pvcsToDelete, pvc)
+				}
+			}
+		}
+
+		// we also want to delete pvcs if the number of replicas has gone down
+		for _, sts := range stsList.Items {
+			pvcsAssocatedWithSts := []corev1.PersistentVolumeClaim{}
+			for _, pvc := range pvcList.Items {
+				if strings.HasPrefix(pvc.Name, fmt.Sprintf("valkey-data-%s-", sts.Name)) {
+					pvcsAssocatedWithSts = append(pvcsAssocatedWithSts, pvc)
+				}
+			}
+
+			// too many PVCs we need to delete the ones that do not have a pod associated
+			if len(pvcsAssocatedWithSts) > int(*sts.Spec.Replicas) {
+				podList := &corev1.PodList{}
+				listOpts := []client.ListOption{
+					client.InNamespace(valkeyCluster.Namespace),
+					client.MatchingLabels(labelsForValkeyCluster(valkeyCluster.Name)),
+				}
+				if err := r.List(ctx, podList, listOpts...); err != nil {
+					log.Error(err, "Failed to list pods", "ValkeyCluster.Namespace", valkeyCluster.Namespace, "ValkeyCluster.Name", valkeyCluster.Name)
+					return ctrl.Result{}, err
+				}
+				for _, pvc := range pvcsAssocatedWithSts {
+					hasPod := false
+					for _, pod := range podList.Items {
+						if pvc.Name == fmt.Sprintf("valkey-data-%s", pod.Name) {
+							hasPod = true
+						}
+					}
+
+					if !hasPod {
+						pvcsToDelete = append(pvcsToDelete, pvc)
+					}
+				}
+			}
+		}
+
+		// ensure list is unique
+		tmp := make(map[string]corev1.PersistentVolumeClaim)
+		for _, toDelete := range pvcsToDelete {
+			tmp[toDelete.Name] = toDelete
+		}
+		pvcsToDelete = nil
+		for _, toDelete := range tmp {
+			pvcsToDelete = append(pvcsToDelete, toDelete)
+		}
+
+		for _, toDelete := range pvcsToDelete {
+			if err := r.Delete(ctx, &toDelete); err != nil {
+				log.Error(err, "Failed to delete PVC", "ValkeyCluster.Namespace", valkeyCluster.Namespace, "PVC.Name", toDelete.Name)
+				return ctrl.Result{}, err
+			}
+			r.Recorder.Event(valkeyCluster, "Normal", "Deleted PVC",
+				fmt.Sprintf("%s deleted", &toDelete.Name))
+		}
+	}
+
 	// assert available
 	clusterNodes, err = r.buildClusterNodes(ctx, valkeyCluster)
 	if err != nil {
