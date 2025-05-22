@@ -18,14 +18,13 @@ import (
 	"context"
 	"dagger/valkey-cluster-operator/internal/dagger"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/blang/semver/v4"
 	"gopkg.in/yaml.v3"
-	"math/rand/v2"
 )
 
 type ValkeyClusterOperator struct {
@@ -137,19 +136,63 @@ func (m *ValkeyClusterOperator) Build(
 // Build the valkey container
 func (m *ValkeyClusterOperator) BuildValkeyContainerImage(
 	ctx context.Context,
-	// +defaultPath="/"
-	source *dagger.Directory,
+	// +defaultPath="/Dockerfile.valkey"
+	dockerfile *dagger.File,
 ) ([]*dagger.Container, error) {
 
 	var platforms = []dagger.Platform{
 		"linux/amd64", // a.k.a. x86_64
-		"linux/arm64", // a.k.a. aarch64
+		//"linux/arm64", // a.k.a. aarch64
 	}
+	valkeyVersion := "8.0.2"
+
+	// ARG VALKEY_VERSION=8.0.2
+	// WORKDIR /home/valkey
+	//
+	// RUN apk add --no-cache --virtual .build-deps \
+	// 	git \
+	// 	coreutils \
+	// 	linux-headers \
+	// 	musl-dev \
+	// 	openssl-dev \
+	// 	gcc \
+	// 	curl \
+	// 	make \
+	// 	&& curl -L https://github.com/valkey-io/valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz -o valkey.tar.gz \
+	// 	&& tar -xzf valkey.tar.gz --strip-components=1 \
+	// 	&& make distclean \
+	// 	&& make MALLOC=libc PREFIX=/usr BUILD_TLS=yes \
+	// 	&& make MALLOC=libc install BUILD_TLS=yes PREFIX=/home/valkey/build
 
 	platformVariants := make([]*dagger.Container, 0, len(platforms))
 	for _, platform := range platforms {
-		ctr := source.DockerBuild(dagger.DirectoryDockerBuildOpts{Platform: platform, Dockerfile: "Dockerfile.valkey"})
-		platformVariants = append(platformVariants, ctr)
+		opts := dagger.ContainerOpts{Platform: platform}
+		builder := dag.Container(opts).
+			From("alpine:3.21.3").
+			WithWorkdir("/home/valkey").
+			WithExec([]string{"apk", "add", "--no-cache", "--virtual", ".build-deps", "git", "coreutils", "linux-headers", "musl-dev", "openssl-dev", "gcc", "curl", "make"}).
+			WithExec([]string{"curl", "-L", "https://github.com/valkey-io/valkey/archive/refs/tags/" + valkeyVersion + ".tar.gz", "-o", "valkey.tar.gz"}).
+			WithExec([]string{"tar", "-xzf", "valkey.tar.gz", "--strip-components=1"}).
+			WithExec([]string{"make", "PREFIX=/usr", "BUILD_TLS=yes"}).
+			WithExec([]string{"make", "install", "BUILD_TLS=yes", "PREFIX=/home/valkey/build"})
+
+		valkey := dag.Container(opts).
+			From("alpine:3.21.3").
+			WithExec([]string{"apk", "add", "--no-cache",
+				"openssl",
+				"ca-certificates",
+				"coreutils"}).
+			WithExec([]string{"addgroup", "-S", "valkey", "-g", "1009"}).
+			WithExec([]string{"adduser", "-S", "-G", "valkey", "valkey", "-u", "1009"}).
+			WithExec([]string{"mkdir", "/etc/valkey"}).
+			WithExec([]string{"chown", "valkey:valkey", "/etc/valkey"}).
+			WithExec([]string{"mkdir", "/var/lib/valkey"}).
+			WithExec([]string{"chown", "valkey:valkey", "/var/lib/valkey"}).
+			WithDirectory("/usr/", builder.Directory("/home/valkey/build")).
+			WithUser("valkey")
+
+		//ctr := dag.Directory().WithFile("/Dockerfile.valkey", dockerfile).DockerBuild(dagger.DirectoryDockerBuildOpts{Platform: platform, Dockerfile: "Dockerfile.valkey"})
+		platformVariants = append(platformVariants, valkey)
 	}
 
 	return platformVariants, nil
@@ -302,7 +345,7 @@ func (m *ValkeyClusterOperator) BuildAndLoadLocally(
 			return err
 		}
 	}
-	platformVariants, err = m.BuildValkeyContainerImage(ctx, source)
+	platformVariants, err = m.BuildValkeyContainerImage(ctx, source.File("Dockerfile.valkey"))
 	if err != nil {
 		return err
 	}
@@ -368,7 +411,7 @@ func (m *ValkeyClusterOperator) BuildTestEnv(
 		WithMountedCache("/root/.cache/go-build", goCache).
 		WithMountedCache("/root/go/pkg/mod", goModCache).
 		WithExec([]string{"go", "install", "sigs.k8s.io/kind@v0.29.0"}).
-		WithExec([]string{"echo", fmt.Sprintf("%d", rand.Int64N(99999999))}).
+		WithEnvVariable("CACHEBUSTER", time.Now().String()).
 		WithExec([]string{"kind", "create", "cluster"}, dagger.ContainerWithExecOpts{Expect: dagger.ReturnTypeAny}).
 		WithExec([]string{"kind", "load", "docker-image", "valkey-cluster-operator:linux-amd64"}, dagger.ContainerWithExecOpts{Expect: dagger.ReturnTypeAny}).
 		WithDirectory("/src", source).
