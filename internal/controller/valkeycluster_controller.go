@@ -866,7 +866,7 @@ func (r *ValkeyClusterReconciler) reconcileValkeySlots(ctx context.Context, valk
 	}
 
 	for _, plan := range actionPlan {
-		logger.Info(fmt.Sprintf("%s/%s: Migrating %d slots from %s to %s", valkeyCluster.Namespace, valkeyCluster.Name, plan.Slots, plan.FromID, plan.ToID))
+		logger.Info(fmt.Sprintf("%s/%s: Begin migrating %d slots from %s to %s", valkeyCluster.Namespace, valkeyCluster.Name, plan.Slots, plan.FromID, plan.ToID))
 		_, _, err := r.executeValkeyCli(ctx, valkeyCluster, []string{"--cluster", "reshard", "127.0.0.1:6379",
 			"--cluster-from", plan.FromID,
 			"--cluster-to", plan.ToID,
@@ -875,6 +875,9 @@ func (r *ValkeyClusterReconciler) reconcileValkeySlots(ctx context.Context, valk
 		if err != nil {
 			return nil, err
 		}
+		r.Recorder.Event(valkeyCluster, "Normal", "Migrated slots",
+			fmt.Sprintf("Migrated %d slots from %s to %s", plan.Slots, plan.FromID, plan.ToID))
+		logger.Info(fmt.Sprintf("%s/%s: Successfully migrated %d slots from %s to %s", valkeyCluster.Namespace, valkeyCluster.Name, plan.Slots, plan.FromID, plan.ToID))
 
 	}
 	return result, nil

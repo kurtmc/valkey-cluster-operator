@@ -46,7 +46,7 @@ var _ = Describe("controller", Ordered, func() {
 
 	AfterAll(func() {
 		By("removing manager namespace")
-		cmd := exec.Command("kubectl", "delete", "--grace-period=1", "--timeout=60s", "ns", namespace)
+		cmd := exec.Command("kubectl", "delete", "--grace-period=1", "--timeout=20s", "ns", namespace)
 		_, _ = utils.Run(cmd)
 
 		if true {
@@ -193,7 +193,7 @@ var _ = Describe("controller", Ordered, func() {
 			)
 			_, err := utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			EventuallyWithOffset(1, verifyClusterState("valkeycluster-sample", 3, 1), 6*time.Minute, 15*time.Second).Should(Succeed())
+			EventuallyWithOffset(1, verifyClusterState("valkeycluster-sample", 3, 1), 3*time.Minute, 15*time.Second).Should(Succeed())
 		})
 		It("should scale down", func() {
 			cmd := exec.Command("kubectl",
