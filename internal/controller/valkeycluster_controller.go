@@ -745,10 +745,15 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 		pvcsToDelete := []corev1.PersistentVolumeClaim{}
 		for _, pvc := range pvcList.Items {
+			// check if this PVC must be deleted
+			mustDelete := true
 			for _, sts := range stsList.Items {
-				if !strings.HasPrefix(pvc.Name, fmt.Sprintf("valkey-data-%s-", sts.Name)) {
-					pvcsToDelete = append(pvcsToDelete, pvc)
+				if strings.HasPrefix(pvc.Name, fmt.Sprintf("valkey-data-%s-", sts.Name)) {
+					mustDelete = false
 				}
+			}
+			if mustDelete {
+				pvcsToDelete = append(pvcsToDelete, pvc)
 			}
 		}
 
