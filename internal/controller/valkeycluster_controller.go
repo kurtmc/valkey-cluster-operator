@@ -746,7 +746,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		pvcsToDelete := []corev1.PersistentVolumeClaim{}
 		for _, pvc := range pvcList.Items {
 			for _, sts := range stsList.Items {
-				if strings.HasPrefix(pvc.Name, fmt.Sprintf("valkey-data-%s-", sts.Name)) {
+				if !strings.HasPrefix(pvc.Name, fmt.Sprintf("valkey-data-%s-", sts.Name)) {
 					pvcsToDelete = append(pvcsToDelete, pvc)
 				}
 			}
@@ -797,13 +797,18 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			pvcsToDelete = append(pvcsToDelete, toDelete)
 		}
 
+		if len(pvcList.Items)-len(pvcsToDelete) != int(valkeyCluster.Spec.Shards+(valkeyCluster.Spec.Shards*valkeyCluster.Spec.Replicas)) {
+			err := fmt.Errorf("Expected resulting number of PVC to match the number of nodes %d but got %d", int(valkeyCluster.Spec.Shards+(valkeyCluster.Spec.Shards*valkeyCluster.Spec.Replicas)), len(pvcList.Items)-len(pvcsToDelete))
+			return ctrl.Result{}, err
+		}
+
 		for _, toDelete := range pvcsToDelete {
 			if err := r.Delete(ctx, &toDelete); err != nil {
 				log.Error(err, "Failed to delete PVC", "ValkeyCluster.Namespace", valkeyCluster.Namespace, "PVC.Name", toDelete.Name)
 				return ctrl.Result{}, err
 			}
 			r.Recorder.Event(valkeyCluster, "Normal", "Deleted PVC",
-				fmt.Sprintf("%s deleted", &toDelete.Name))
+				fmt.Sprintf("PVC %s deleted", toDelete.Name))
 		}
 	}
 
