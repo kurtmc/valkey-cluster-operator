@@ -1,0 +1,19 @@
+name: dagger
+on:
+  push:
+    branches: [kurt-branch]
+
+jobs:
+  publish:
+    name: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Call Dagger Function
+        uses: dagger/dagger-for-github@8.0.0
+        with:
+          version: "latest"
+          module: ./
+          args: build-manifests
+          cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}

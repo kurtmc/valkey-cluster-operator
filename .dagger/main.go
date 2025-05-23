@@ -447,3 +447,22 @@ func (m *ValkeyClusterOperator) BuildTestEnv(
 		WithEnvVariable("KUBEPATCH_CLIENT_CERTIFICATE", kubeConfig.Users[0].User.ClientCertificateData).
 		WithEnvVariable("KUBEPATCH_CLIENT_KEY", kubeConfig.Users[0].User.ClientKeyData), nil
 }
+
+// Build the Kubernetes manifests
+func (m *ValkeyClusterOperator) BuildManifests(
+	ctx context.Context,
+	// +defaultPath="/"
+	source *dagger.Directory,
+) *dagger.Directory {
+
+	return dag.Container().
+		From("golang:1.24").
+		WithWorkdir("/workspace").
+		WithDirectory("/workspace", source).
+		WithMountedCache("/workspace-bin", dag.CacheVolume("workspace-bin")).
+		WithMountedCache("/go/pkg/mod", dag.CacheVolume("go-mod-124")).
+		WithEnvVariable("GOMODCACHE", "/go/pkg/mod").
+		WithMountedCache("/go/build-cache", dag.CacheVolume("go-build-124")).
+		WithEnvVariable("GOCACHE", "/go/build-cache").
+		WithExec([]string{"make", "build-installer"}).Directory("/workspace/dist")
+}
