@@ -441,7 +441,7 @@ func (r *ValkeyClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if !slotsInShard {
 			// first we need to delete all node from cluster
 			for _, cn := range clusterNodesInLastSts {
-				log.Info(fmt.Sprintf("Removing %s from %s/%", cn.ID, valkeyCluster.Namespace, valkeyCluster.Name))
+				log.Info(fmt.Sprintf("Removing %s from %s/%s", cn.ID, valkeyCluster.Namespace, valkeyCluster.Name))
 				_, _, err := r.executeValkeyCli(ctx, valkeyCluster, []string{"--cluster", "del-node", "127.0.0.1:6379", cn.ID})
 				if err != nil {
 					log.Error(err, "Failed to remove cluster node")
@@ -1153,13 +1153,29 @@ func (r *ValkeyClusterReconciler) persistentVolumeClaim(name string, valkeyClust
 
 // statefulSet returns a ValkeyCluster StatefulSet object
 func (r *ValkeyClusterReconciler) statefulSet(name string, size int32, valkeyCluster *cachev1alpha1.ValkeyCluster) (*appsv1.StatefulSet, error) {
-	// Get the Operand image
-	image, err := imageForValkeyCluster()
-	if err != nil {
-		return nil, err
-	}
-
 	ls := labelsForValkeyCluster(valkeyCluster.Name)
+	ls["statefulset.kubernetes.io/sts-name"] = name
+
+	affinityTerms := []corev1.PodAffinityTerm{}
+	for _, topologyKey := range valkeyCluster.Spec.AntiAffinityTopologyKeys {
+		affinityTerms = append(affinityTerms, corev1.PodAffinityTerm{
+			LabelSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"statefulset.kubernetes.io/sts-name": name,
+					"cache/name":                         valkeyCluster.Name,
+				},
+			},
+			TopologyKey: topologyKey,
+		})
+	}
+	var affinity *corev1.Affinity
+	if len(affinityTerms) > 0 {
+		affinity = &corev1.Affinity{
+			PodAntiAffinity: &corev1.PodAntiAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: affinityTerms,
+			},
+		}
+	}
 
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1177,6 +1193,8 @@ func (r *ValkeyClusterReconciler) statefulSet(name string, size int32, valkeyClu
 					Labels: ls,
 				},
 				Spec: corev1.PodSpec{
+					NodeSelector: valkeyCluster.Spec.NodeSelector,
+					Tolerations:  valkeyCluster.Spec.Tolerations,
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: &[]bool{true}[0],
 						// IMPORTANT: seccomProfile was introduced with Kubernetes 1.19
@@ -1189,7 +1207,7 @@ func (r *ValkeyClusterReconciler) statefulSet(name string, size int32, valkeyClu
 					},
 					Containers: []corev1.Container{
 						{
-							Image:           image,
+							Image:           valkeyCluster.Spec.Image,
 							Name:            "valkey-cluster-node",
 							ImagePullPolicy: corev1.PullIfNotPresent,
 							Resources:       *valkeyCluster.Spec.Resources,
@@ -1319,6 +1337,7 @@ func (r *ValkeyClusterReconciler) statefulSet(name string, size int32, valkeyClu
 							},
 						},
 					},
+					Affinity: affinity,
 				},
 			},
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{

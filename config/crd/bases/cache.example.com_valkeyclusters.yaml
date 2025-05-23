@@ -39,6 +39,13 @@ spec:
           spec:
             description: ValkeyClusterSpec defines the desired state of ValkeyCluster
             properties:
+              antiAffinityTopologyKeys:
+                description: Topology keys to use in StatefulSet Pod antiaffinity
+                  used to ensure that pods in a shard are run on separate hosts or
+                  separate availability zones
+                items:
+                  type: string
+                type: array
               image:
                 description: Valkey docker image to use
                 type: string

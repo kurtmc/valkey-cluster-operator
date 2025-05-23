@@ -58,6 +58,10 @@ type ValkeyClusterSpec struct {
 	// Tolerations
 	// +operator-sdk:csv:customresourcedefinitions:type=spec
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// Topology keys to use in StatefulSet Pod antiaffinity used to ensure that pods in a shard are run on separate hosts or separate availability zones
+	// +operator-sdk:csv:customresourcedefinitions:type=spec
+	AntiAffinityTopologyKeys []string `json:"antiAffinityTopologyKeys,omitempty"`
 }
 
 // ValkeyClusterStatus defines the observed state of ValkeyCluster
