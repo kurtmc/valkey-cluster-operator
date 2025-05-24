@@ -15,5 +15,5 @@ jobs:
         with:
           version: "latest"
           module: ./
-          args: build-manifests
+          args: create-git-hub-release
           cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}

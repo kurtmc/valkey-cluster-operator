@@ -466,3 +466,22 @@ func (m *ValkeyClusterOperator) BuildManifests(
 		WithEnvVariable("GOCACHE", "/go/build-cache").
 		WithExec([]string{"make", "build-installer"}).Directory("/workspace/dist")
 }
+
+func (m *ValkeyClusterOperator) GhCliContainer() *dagger.Container {
+	return dag.Container().
+		From("alpine").
+		WithExec([]string{"apk", "add", "--no-cache", "github-cli"})
+}
+
+func (m *ValkeyClusterOperator) CreateGitHubRelease(
+	ctx context.Context,
+	// +defaultPath="/"
+	source *dagger.Directory,
+) (string, error) {
+	manifestDir := m.BuildManifests(ctx, source)
+
+	return m.GhCliContainer().
+		WithDirectory("/manifest", manifestDir).
+		WithExec([]string{"gh", "release", "create", "v1.2.3", "/manifest/*"}).Stdout(ctx)
+
+}
