@@ -494,7 +494,7 @@ func (m *ValkeyClusterOperator) CreateGitHubRelease(
 		return err
 	}
 
-	_, err = m.PublishDocker(ctx, source, nextVersion)
+	_, err = m.PublishDocker(ctx, source, nextVersion, ghToken)
 	if err != nil {
 		return err
 	}
