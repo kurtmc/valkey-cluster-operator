@@ -85,13 +85,10 @@ func (m *ValkeyClusterOperator) PublishDocker(
 	ctx context.Context,
 	// +defaultPath="/"
 	source *dagger.Directory,
+	tag string,
 ) (string, error) {
 	// container registry for the multi-platform image
-	tag, err := getNewImageTag()
-	if err != nil {
-		return "", err
-	}
-	imageRepo := "quay.io/kurtmcalpine/valkey-cluster-operator:" + tag
+	imageRepo := "ghcr.io/kurtmc/valkey-cluster-operator:" + tag
 
 	platformVariants, err := m.Build(ctx, source)
 	if err != nil {
@@ -479,18 +476,27 @@ func (m *ValkeyClusterOperator) CreateGitHubRelease(
 	// +defaultPath="/"
 	source *dagger.Directory,
 	ghToken *dagger.Secret,
-) (string, error) {
+) error {
 	manifestDir := m.BuildManifests(ctx, source)
 
 	nextVersion, err := m.GetNextReleaseVersion(ctx, source, ghToken)
 	if err != nil {
-		return "", err
+		return err
 	}
 
-	return m.GhCliContainer().
+	_, err = m.GhCliContainer().
 		WithDirectory("/manifest", manifestDir).
 		WithSecretVariable("GH_TOKEN", ghToken).
 		WithExec([]string{"gh", "--repo=kurtmc/valkey-cluster-operator", "release", "create", nextVersion, "/manifest/install.yaml"}).Stdout(ctx)
+	if err != nil {
+		return err
+	}
+
+	_, err = m.PublishDocker(ctx, source, nextVersion)
+	if err != nil {
+		return err
+	}
+	return nil
 
 }
 
