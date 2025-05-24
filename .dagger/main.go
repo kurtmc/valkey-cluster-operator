@@ -484,6 +484,6 @@ func (m *ValkeyClusterOperator) CreateGitHubRelease(
 	return m.GhCliContainer().
 		WithDirectory("/manifest", manifestDir).
 		WithSecretVariable("GH_TOKEN", ghToken).
-		WithExec([]string{"gh", "release", "create", "v1.2.3", "/manifest/install.yaml"}).Stdout(ctx)
+		WithExec([]string{"gh", "--repo=kurtmc/valkey-cluster-operator", "release", "create", "v0.0.1", "/manifest/install.yaml"}).Stdout(ctx)
 
 }
