@@ -477,11 +477,13 @@ func (m *ValkeyClusterOperator) CreateGitHubRelease(
 	ctx context.Context,
 	// +defaultPath="/"
 	source *dagger.Directory,
+	ghToken *dagger.Secret,
 ) (string, error) {
 	manifestDir := m.BuildManifests(ctx, source)
 
 	return m.GhCliContainer().
 		WithDirectory("/manifest", manifestDir).
+		WithSecretVariable("GH_TOKEN", ghToken).
 		WithExec([]string{"gh", "release", "create", "v1.2.3", "/manifest/*"}).Stdout(ctx)
 
 }

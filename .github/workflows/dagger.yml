@@ -15,5 +15,5 @@ jobs:
         with:
           version: "latest"
           module: ./
-          args: create-git-hub-release
+          args: create-git-hub-release --gh-token=${{ secrets.GITHUB_TOKEN }}
           cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
