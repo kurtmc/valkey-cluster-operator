@@ -111,6 +111,29 @@ func (m *ValkeyClusterOperator) PublishDocker(
 	return tag, nil
 }
 
+// Publish docker container
+func (m *ValkeyClusterOperator) PublishValkeyDocker(
+	ctx context.Context,
+	ghToken *dagger.Secret,
+) error {
+	// container registry for the multi-platform image
+	imageRepo := "ghcr.io/kurtmc/valkey:8.0.2"
+
+	platformVariants, err := m.BuildValkeyContainerImage(ctx)
+	if err != nil {
+		return err
+	}
+
+	// publish to registry
+	_, err = dag.Container().
+		WithRegistryAuth("ghcr.io", "kurtmc", ghToken).
+		Publish(ctx, imageRepo, dagger.ContainerPublishOpts{
+			PlatformVariants: platformVariants,
+		})
+
+	return err
+}
+
 // Build the application container
 func (m *ValkeyClusterOperator) Build(
 	ctx context.Context,
@@ -136,13 +159,11 @@ func (m *ValkeyClusterOperator) Build(
 // Build the valkey container
 func (m *ValkeyClusterOperator) BuildValkeyContainerImage(
 	ctx context.Context,
-	// +defaultPath="/Dockerfile.valkey"
-	dockerfile *dagger.File,
 ) ([]*dagger.Container, error) {
 
 	var platforms = []dagger.Platform{
 		"linux/amd64", // a.k.a. x86_64
-		//"linux/arm64", // a.k.a. aarch64
+		"linux/arm64", // a.k.a. aarch64
 	}
 	valkeyVersion := "8.0.2"
 
@@ -495,6 +516,10 @@ func (m *ValkeyClusterOperator) CreateGitHubRelease(
 	}
 
 	_, err = m.PublishDocker(ctx, source, nextVersion, ghToken)
+	if err != nil {
+		return err
+	}
+	err = m.PublishValkeyDocker(ctx, ghToken)
 	if err != nil {
 		return err
 	}
