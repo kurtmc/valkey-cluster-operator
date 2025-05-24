@@ -1,4 +1,7 @@
 name: dagger
+
+permissions: write-all
+
 on:
   push:
     branches: [kurt-branch]
