@@ -86,6 +86,7 @@ func (m *ValkeyClusterOperator) PublishDocker(
 	// +defaultPath="/"
 	source *dagger.Directory,
 	tag string,
+	ghToken *dagger.Secret,
 ) (string, error) {
 	// container registry for the multi-platform image
 	imageRepo := "ghcr.io/kurtmc/valkey-cluster-operator:" + tag
@@ -97,6 +98,7 @@ func (m *ValkeyClusterOperator) PublishDocker(
 
 	// publish to registry
 	_, err = dag.Container().
+		WithRegistryAuth("ghcr.io", "kurtmc", ghToken).
 		Publish(ctx, imageRepo, dagger.ContainerPublishOpts{
 			PlatformVariants: platformVariants,
 		})
