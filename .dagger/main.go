@@ -366,7 +366,7 @@ func (m *ValkeyClusterOperator) BuildAndLoadLocally(
 			return err
 		}
 	}
-	platformVariants, err = m.BuildValkeyContainerImage(ctx, source.File("Dockerfile.valkey"))
+	platformVariants, err = m.BuildValkeyContainerImage(ctx)
 	if err != nil {
 		return err
 	}
