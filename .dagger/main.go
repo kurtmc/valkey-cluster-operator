@@ -521,7 +521,7 @@ func (m *ValkeyClusterOperator) GetNextReleaseVersion(
 
 	releasesTxt, err := m.GhCliContainer().
 		WithSecretVariable("GH_TOKEN", ghToken).
-		WithExec([]string{"gh", "release", "list", "--json", "createdAt,isDraft,isLatest,isPrerelease,name,publishedAt,tagName"}).Stdout(ctx)
+		WithExec([]string{"gh", "release", "--repo=kurtmc/valkey-cluster-operator", "list", "--json", "createdAt,isDraft,isLatest,isPrerelease,name,publishedAt,tagName"}).Stdout(ctx)
 
 	r := Releases{}
 	err = json.Unmarshal([]byte(releasesTxt), &r)
