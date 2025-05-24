@@ -18,6 +18,7 @@ import (
 	"context"
 	"dagger/valkey-cluster-operator/internal/dagger"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -481,9 +482,56 @@ func (m *ValkeyClusterOperator) CreateGitHubRelease(
 ) (string, error) {
 	manifestDir := m.BuildManifests(ctx, source)
 
+	nextVersion, err := m.GetNextReleaseVersion(ctx, source, ghToken)
+	if err != nil {
+		return "", err
+	}
+
 	return m.GhCliContainer().
 		WithDirectory("/manifest", manifestDir).
 		WithSecretVariable("GH_TOKEN", ghToken).
-		WithExec([]string{"gh", "--repo=kurtmc/valkey-cluster-operator", "release", "create", "v0.0.1", "/manifest/install.yaml"}).Stdout(ctx)
+		WithExec([]string{"gh", "--repo=kurtmc/valkey-cluster-operator", "release", "create", nextVersion, "/manifest/install.yaml"}).Stdout(ctx)
+
+}
+
+func (m *ValkeyClusterOperator) GetNextReleaseVersion(
+	ctx context.Context,
+	// +defaultPath="/"
+	source *dagger.Directory,
+	ghToken *dagger.Secret,
+) (string, error) {
+
+	type Releases []struct {
+		CreatedAt    time.Time `json:"createdAt"`
+		IsDraft      bool      `json:"isDraft"`
+		IsLatest     bool      `json:"isLatest"`
+		IsPrerelease bool      `json:"isPrerelease"`
+		Name         string    `json:"name"`
+		PublishedAt  time.Time `json:"publishedAt"`
+		TagName      string    `json:"tagName"`
+	}
+
+	releasesTxt, err := m.GhCliContainer().
+		WithSecretVariable("GH_TOKEN", ghToken).
+		WithExec([]string{"gh", "release", "list", "--json", "createdAt,isDraft,isLatest,isPrerelease,name,publishedAt,tagName"}).Stdout(ctx)
+
+	r := Releases{}
+	err = json.Unmarshal([]byte(releasesTxt), &r)
+	if err != nil {
+		return "", err
+	}
+
+	for _, rel := range r {
+		if rel.IsLatest {
+			v := semver.MustParse(strings.TrimPrefix(rel.TagName, "v"))
+			err = v.IncrementPatch()
+			if err != nil {
+				return "", err
+			}
+			return "v" + v.String(), nil
+		}
+	}
+
+	return "", fmt.Errorf("Could not get next release version")
 
 }
