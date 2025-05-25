@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -491,6 +492,11 @@ func (m *ValkeyClusterOperator) CreateGitHubRelease(
 ) error {
 	manifestDir := m.BuildManifests(ctx, source)
 
+	tf, err := m.CreateTerraform(ctx, source)
+	if err != nil {
+		return err
+	}
+
 	nextVersion, err := m.GetNextReleaseVersion(ctx, source, ghToken)
 	if err != nil {
 		return err
@@ -498,8 +504,9 @@ func (m *ValkeyClusterOperator) CreateGitHubRelease(
 
 	_, err = m.GhCliContainer().
 		WithDirectory("/manifest", manifestDir).
+		WithNewFile("/install.tf", tf).
 		WithSecretVariable("GH_TOKEN", ghToken).
-		WithExec([]string{"gh", "--repo=kurtmc/valkey-cluster-operator", "release", "create", nextVersion, "/manifest/install.yaml"}).Stdout(ctx)
+		WithExec([]string{"gh", "--repo=kurtmc/valkey-cluster-operator", "release", "create", nextVersion, "/manifest/install.yaml", "/install.tf"}).Stdout(ctx)
 	if err != nil {
 		return err
 	}
@@ -556,4 +563,83 @@ func (m *ValkeyClusterOperator) GetNextReleaseVersion(
 
 	return "", fmt.Errorf("Could not get next release version")
 
+}
+
+func (m *ValkeyClusterOperator) CreateTerraform(
+	ctx context.Context,
+	// +defaultPath="/"
+	source *dagger.Directory,
+) (string, error) {
+	manifestDir := m.BuildManifests(ctx, source)
+
+	yamlStr, err := manifestDir.File("install.yaml").Contents(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	tf, err := YamlToTf(ctx, yamlStr)
+	if err != nil {
+		return "", err
+	}
+
+	return tf, nil
+}
+
+func YamlToTf(ctx context.Context, yamlStr string) (string, error) {
+	ctr := dag.Container().
+		From("golang:1.24").
+		WithExec([]string{"go", "install", "github.com/jrhouston/tfk8s@latest"}).
+		WithExec([]string{"sh", "-c", "git clone https://github.com/sl1pm4t/k2tf.git && cd k2tf && go install && cd .. && rm -rf k2tf"})
+
+	builder := strings.Builder{}
+	parts := strings.Split(yamlStr, "---\n")
+
+	for _, part := range parts {
+		tmpfile, err := os.CreateTemp("", "k2tf-*.yaml")
+		if err != nil {
+			return "", err
+		}
+
+		err = os.WriteFile(tmpfile.Name(), []byte(part), 0644)
+		if err != nil {
+			return "", err
+		}
+
+		defer func() {
+			err := os.Remove(tmpfile.Name())
+			if err != nil {
+				fmt.Printf("Error deleting temporary file: %v", err)
+			}
+		}()
+
+		var obj struct {
+			Kind       string `yaml:"kind"`
+			ApiVersion string `yaml:"apiVersion"`
+		}
+		err = yaml.Unmarshal([]byte(part), &obj)
+		if err != nil {
+			return "", err
+		}
+
+		var output string
+		if obj.Kind == "CustomResourceDefinition" {
+			output, err = ctr.
+				WithNewFile("/tmp/file.yaml", part).
+				WithExec([]string{"tfk8s", "-f", "/tmp/file.yaml"}).Stdout(ctx)
+			if err != nil {
+				return "", err
+			}
+		} else {
+			output, err = ctr.
+				WithNewFile("/tmp/file.yaml", part).
+				WithExec([]string{"k2tf", "-f", "/tmp/file.yaml"}).Stdout(ctx)
+			if err != nil {
+				return "", err
+			}
+		}
+
+		builder.WriteString(string(output))
+	}
+
+	return builder.String(), nil
 }
