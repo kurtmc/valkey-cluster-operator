@@ -199,7 +199,7 @@ func (m *ValkeyClusterOperator) BuildValkeyContainerImage(
 		// 	WithExec([]string{"make", "install", "BUILD_TLS=yes", "PREFIX=/home/valkey/build"})
 
 		valkey := dag.Container(opts).
-			From("bitnami/valkey:8.0.2").
+			From("bitnami/valkey:" + valkeyVersion).
 			WithExec([]string{"addgroup", "-S", "valkey", "-g", "1009"}).
 			WithExec([]string{"adduser", "-S", "-G", "valkey", "valkey", "-u", "1009"}).
 			WithExec([]string{"mkdir", "/etc/valkey"}).
