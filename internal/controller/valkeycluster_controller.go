@@ -1384,7 +1384,7 @@ func imageForValkeyCluster() (string, error) {
 	var imageEnvVar = "VALKEYCLUSTER_IMAGE"
 	image, found := os.LookupEnv(imageEnvVar)
 	if !found {
-		return "ghcr.io/hyperspike/valkey:8.0.2", nil
+		return "ghcr.io/kurtmc/valkey:8.0.2", nil
 	}
 	return image, nil
 }
