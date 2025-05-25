@@ -464,6 +464,8 @@ func (m *ValkeyClusterOperator) BuildManifests(
 	ctx context.Context,
 	// +defaultPath="/"
 	source *dagger.Directory,
+	// +default="test"
+	tag string,
 ) *dagger.Directory {
 
 	return dag.Container().
@@ -475,6 +477,7 @@ func (m *ValkeyClusterOperator) BuildManifests(
 		WithEnvVariable("GOMODCACHE", "/go/pkg/mod").
 		WithMountedCache("/go/build-cache", dag.CacheVolume("go-build-124")).
 		WithEnvVariable("GOCACHE", "/go/build-cache").
+		WithEnvVariable("IMG", "ghcr.io/kurtmc/valkey-cluster-operator:"+tag).
 		WithExec([]string{"make", "build-installer"}).Directory("/workspace/dist")
 }
 
@@ -490,14 +493,15 @@ func (m *ValkeyClusterOperator) CreateGitHubRelease(
 	source *dagger.Directory,
 	ghToken *dagger.Secret,
 ) error {
-	manifestDir := m.BuildManifests(ctx, source)
 
-	tf, err := m.CreateTerraform(ctx, source)
+	nextVersion, err := m.GetNextReleaseVersion(ctx, source, ghToken)
 	if err != nil {
 		return err
 	}
 
-	nextVersion, err := m.GetNextReleaseVersion(ctx, source, ghToken)
+	manifestDir := m.BuildManifests(ctx, source, nextVersion)
+
+	tf, err := m.CreateTerraform(ctx, manifestDir.File("install.yaml"))
 	if err != nil {
 		return err
 	}
@@ -567,12 +571,10 @@ func (m *ValkeyClusterOperator) GetNextReleaseVersion(
 
 func (m *ValkeyClusterOperator) CreateTerraform(
 	ctx context.Context,
-	// +defaultPath="/"
-	source *dagger.Directory,
+	yamlFile *dagger.File,
 ) (string, error) {
-	manifestDir := m.BuildManifests(ctx, source)
 
-	yamlStr, err := manifestDir.File("install.yaml").Contents(ctx)
+	yamlStr, err := yamlFile.Contents(ctx)
 	if err != nil {
 		return "", err
 	}
