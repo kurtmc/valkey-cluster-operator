@@ -163,7 +163,7 @@ func (m *ValkeyClusterOperator) BuildValkeyContainerImage(
 ) ([]*dagger.Container, error) {
 
 	var platforms = []dagger.Platform{
-		// "linux/amd64", // a.k.a. x86_64
+		"linux/amd64", // a.k.a. x86_64
 		"linux/arm64", // a.k.a. aarch64
 	}
 	valkeyVersion := "8.0.2"
