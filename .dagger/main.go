@@ -199,12 +199,7 @@ func (m *ValkeyClusterOperator) BuildValkeyContainerImage(
 		// 	WithExec([]string{"make", "install", "BUILD_TLS=yes", "PREFIX=/home/valkey/build"})
 
 		valkey := dag.Container(opts).
-			From("bitnami/valkey:" + valkeyVersion).
-			WithExec([]string{"addgroup", "-S", "valkey", "-g", "1009"}).
-			WithExec([]string{"adduser", "-S", "-G", "valkey", "valkey", "-u", "1009"}).
-			WithExec([]string{"mkdir", "/etc/valkey"}).
-			WithExec([]string{"chown", "valkey:valkey", "/etc/valkey"}).
-			WithUser("valkey")
+			From("bitnami/valkey:" + valkeyVersion)
 
 		//ctr := dag.Directory().WithFile("/Dockerfile.valkey", dockerfile).DockerBuild(dagger.DirectoryDockerBuildOpts{Platform: platform, Dockerfile: "Dockerfile.valkey"})
 		platformVariants = append(platformVariants, valkey)
