@@ -162,7 +162,7 @@ func (m *ValkeyClusterOperator) BuildValkeyContainerImage(
 ) ([]*dagger.Container, error) {
 
 	var platforms = []dagger.Platform{
-		"linux/amd64", // a.k.a. x86_64
+		// "linux/amd64", // a.k.a. x86_64
 		"linux/arm64", // a.k.a. aarch64
 	}
 	valkeyVersion := "8.0.2"
@@ -188,28 +188,22 @@ func (m *ValkeyClusterOperator) BuildValkeyContainerImage(
 	platformVariants := make([]*dagger.Container, 0, len(platforms))
 	for _, platform := range platforms {
 		opts := dagger.ContainerOpts{Platform: platform}
-		builder := dag.Container(opts).
-			From("alpine:3.21.3").
-			WithWorkdir("/home/valkey").
-			WithExec([]string{"apk", "add", "--no-cache", "--virtual", ".build-deps", "git", "coreutils", "linux-headers", "musl-dev", "openssl-dev", "gcc", "curl", "make"}).
-			WithExec([]string{"curl", "-L", "https://github.com/valkey-io/valkey/archive/refs/tags/" + valkeyVersion + ".tar.gz", "-o", "valkey.tar.gz"}).
-			WithExec([]string{"tar", "-xzf", "valkey.tar.gz", "--strip-components=1"}).
-			WithExec([]string{"make", "PREFIX=/usr", "BUILD_TLS=yes"}).
-			WithExec([]string{"make", "install", "BUILD_TLS=yes", "PREFIX=/home/valkey/build"})
+		// builder := dag.Container().
+		// 	From("debian").
+		// 	WithWorkdir("/home/valkey").
+		// 	WithExec([]tring{"apk", "add", "--no-cache", "--virtual", ".build-deps", "git", "coreutils", "linux-headers", "musl-dev", "openssl-dev", "gcc-arm-none-eabi", "curl", "make"}).
+		// 	WithExec([]string{"curl", "-L", "https://github.com/valkey-io/valkey/archive/refs/tags/" + valkeyVersion + ".tar.gz", "-o", "valkey.tar.gz"}).
+		// 	WithExec([]string{"tar", "-xzf", "valkey.tar.gz", "--strip-components=1"}).
+		// 	WithExec([]string{"make", "PREFIX=/usr", "BUILD_TLS=yes"}).
+		// 	Terminal().
+		// 	WithExec([]string{"make", "install", "BUILD_TLS=yes", "PREFIX=/home/valkey/build"})
 
 		valkey := dag.Container(opts).
-			From("alpine:3.21.3").
-			WithExec([]string{"apk", "add", "--no-cache",
-				"openssl",
-				"ca-certificates",
-				"coreutils"}).
+			From("bitnami/valkey:8.0.2").
 			WithExec([]string{"addgroup", "-S", "valkey", "-g", "1009"}).
 			WithExec([]string{"adduser", "-S", "-G", "valkey", "valkey", "-u", "1009"}).
 			WithExec([]string{"mkdir", "/etc/valkey"}).
 			WithExec([]string{"chown", "valkey:valkey", "/etc/valkey"}).
-			WithExec([]string{"mkdir", "/var/lib/valkey"}).
-			WithExec([]string{"chown", "valkey:valkey", "/var/lib/valkey"}).
-			WithDirectory("/usr/", builder.Directory("/home/valkey/build")).
 			WithUser("valkey")
 
 		//ctr := dag.Directory().WithFile("/Dockerfile.valkey", dockerfile).DockerBuild(dagger.DirectoryDockerBuildOpts{Platform: platform, Dockerfile: "Dockerfile.valkey"})
