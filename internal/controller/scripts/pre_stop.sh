@@ -44,3 +44,5 @@ while ! check_failover_complete; do
 	echo "Failover in progress, waiting..."
 	sleep 1
 done
+
+sleep 15
