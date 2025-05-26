@@ -14,12 +14,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Expose GitHub Runtime
+        uses: crazy-max/ghaction-github-runtime@v3
+      - name: Env
+        run: |
+          # ACTIONS_RUNTIME_TOKEN, ACTIONS_RUNTIME_URL should be exposed
+          env|sort
       - name: Call Dagger Function
-        uses: dagger/dagger-for-github@8.0.0
+        uses: rustic-beans/dagger-for-github@main
         with:
           version: "latest"
           module: ./
           args: unit-test
+          cache_config: "type=gha,mode=max,url=${{ env.ACTIONS_CACHE_URL }},token=${{ env.ACTIONS_RUNTIME_TOKEN }}"
           cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
   e2e_test:
     name: e2e-test
@@ -27,10 +34,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Expose GitHub Runtime
+        uses: crazy-max/ghaction-github-runtime@v3
+      - name: Env
+        run: |
+          # ACTIONS_RUNTIME_TOKEN, ACTIONS_RUNTIME_URL should be exposed
+          env|sort
       - name: Call Dagger Function
         uses: dagger/dagger-for-github@8.0.0
         with:
           version: "latest"
           module: ./
           args: e-2-e-test --sock=/var/run/docker.sock
+          cache_config: "type=gha,mode=max,url=${{ env.ACTIONS_CACHE_URL }},token=${{ env.ACTIONS_RUNTIME_TOKEN }}"
           cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
