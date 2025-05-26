@@ -9,7 +9,7 @@ on:
 
 jobs:
   unit_test:
-    name: publish
+    name: unit-test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -22,7 +22,7 @@ jobs:
           args: unit-test
           cloud-token: ${{ secrets.DAGGER_CLOUD_TOKEN }}
   e2e_test:
-    name: publish
+    name: e2e-test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
