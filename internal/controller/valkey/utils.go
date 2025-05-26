@@ -215,6 +215,10 @@ func ToStatusClusterNode(cn ClusterNode) cachev1alpha1.ValkeyClusterNode {
 }
 
 func GenerateReshardingPlan(clusterNodesForShard map[int][]*ClusterNode, desiredShards int) ([]Reshard, error) {
+	if len(clusterNodesForShard) == 0 {
+		return nil, nil
+	}
+
 	primaries := map[int]*ClusterNode{}
 
 	for shardIdx, clusterNodes := range clusterNodesForShard {
