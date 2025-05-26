@@ -109,7 +109,6 @@ func (m *ValkeyClusterOperator) PublishDocker(
 		return "", err
 	}
 
-	// return build directory
 	return tag, nil
 }
 
@@ -169,44 +168,13 @@ func (m *ValkeyClusterOperator) BuildValkeyContainerImage(
 	}
 	valkeyVersion := "8.0.2"
 
-	// ARG VALKEY_VERSION=8.0.2
-	// WORKDIR /home/valkey
-	//
-	// RUN apk add --no-cache --virtual .build-deps \
-	// 	git \
-	// 	coreutils \
-	// 	linux-headers \
-	// 	musl-dev \
-	// 	openssl-dev \
-	// 	gcc \
-	// 	curl \
-	// 	make \
-	// 	&& curl -L https://github.com/valkey-io/valkey/archive/refs/tags/${VALKEY_VERSION}.tar.gz -o valkey.tar.gz \
-	// 	&& tar -xzf valkey.tar.gz --strip-components=1 \
-	// 	&& make distclean \
-	// 	&& make MALLOC=libc PREFIX=/usr BUILD_TLS=yes \
-	// 	&& make MALLOC=libc install BUILD_TLS=yes PREFIX=/home/valkey/build
-
 	platformVariants := make([]*dagger.Container, 0, len(platforms))
 	for _, platform := range platforms {
 		opts := dagger.ContainerOpts{Platform: platform}
-		// builder := dag.Container().
-		// 	From("debian").
-		// 	WithWorkdir("/home/valkey").
-		// 	WithExec([]tring{"apk", "add", "--no-cache", "--virtual", ".build-deps", "git", "coreutils", "linux-headers", "musl-dev", "openssl-dev", "gcc-arm-none-eabi", "curl", "make"}).
-		// 	WithExec([]string{"curl", "-L", "https://github.com/valkey-io/valkey/archive/refs/tags/" + valkeyVersion + ".tar.gz", "-o", "valkey.tar.gz"}).
-		// 	WithExec([]string{"tar", "-xzf", "valkey.tar.gz", "--strip-components=1"}).
-		// 	WithExec([]string{"make", "PREFIX=/usr", "BUILD_TLS=yes"}).
-		// 	Terminal().
-		// 	WithExec([]string{"make", "install", "BUILD_TLS=yes", "PREFIX=/home/valkey/build"})
-
 		valkey := dag.Container(opts).
 			From("bitnami/valkey:" + valkeyVersion)
-
-		//ctr := dag.Directory().WithFile("/Dockerfile.valkey", dockerfile).DockerBuild(dagger.DirectoryDockerBuildOpts{Platform: platform, Dockerfile: "Dockerfile.valkey"})
 		platformVariants = append(platformVariants, valkey)
 	}
-
 	return platformVariants, nil
 }
 
@@ -263,48 +231,6 @@ func (m *ValkeyClusterOperator) E2eTest(
 
 	return container.
 		WithExec([]string{"make", "test-e2e"}).Stdout(ctx)
-}
-
-func getNewImageTag() (string, error) {
-	type TagList struct {
-		Name string   `json:"name"`
-		Tags []string `json:"tags"`
-	}
-	resp, err := http.Get("https://quay.io/v2/kurtmcalpine/valkey-cluster-operator/tags/list")
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	t := TagList{}
-	err = json.Unmarshal(b, &t)
-	if err != nil {
-		return "", err
-	}
-
-	newest, err := semver.Make("0.0.0")
-	if err != nil {
-		return "", err
-	}
-	for _, tag := range t.Tags {
-		if !strings.HasPrefix(tag, "v") {
-			continue
-		}
-		v, err := semver.Make(strings.TrimPrefix(tag, "v"))
-		if err != nil {
-			continue
-		}
-
-		if v.GT(newest) {
-			newest = v
-		}
-	}
-	newest.IncrementPatch()
-	return "v" + newest.String(), nil
 }
 
 func getKubectlRelease() (string, error) {
