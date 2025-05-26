@@ -8,7 +8,7 @@ metadata:
   name: valkeycluster-editor-role
 rules:
 - apiGroups:
-  - cache.example.com
+  - cache.kurtmc.com
   resources:
   - valkeyclusters
   verbs:
@@ -20,7 +20,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - cache.example.com
+  - cache.kurtmc.com
   resources:
   - valkeyclusters/status
   verbs:

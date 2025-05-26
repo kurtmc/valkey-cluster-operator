@@ -1,4 +1,4 @@
-apiVersion: cache.example.com/v1alpha1
+apiVersion: cache.kurtmc.com/v1alpha1
 kind: ValkeyCluster
 metadata:
   labels:

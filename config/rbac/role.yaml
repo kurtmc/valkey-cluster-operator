@@ -17,7 +17,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - cache.example.com
+  - cache.kurtmc.com
   resources:
   - valkeyclusters
   verbs:
@@ -29,13 +29,13 @@ rules:
   - update
   - watch
 - apiGroups:
-  - cache.example.com
+  - cache.kurtmc.com
   resources:
   - valkeyclusters/finalizers
   verbs:
   - update
 - apiGroups:
-  - cache.example.com
+  - cache.kurtmc.com
   resources:
   - valkeyclusters/status
   verbs:

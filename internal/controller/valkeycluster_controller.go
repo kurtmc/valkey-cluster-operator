@@ -57,7 +57,7 @@ import (
 //go:embed scripts/*
 var scripts embed.FS
 
-const valkeyClusterFinalizer = "cache.example.com/finalizer"
+const valkeyClusterFinalizer = "cache.kurtmc.com/finalizer"
 
 // Definitions to manage status conditions
 const (
@@ -80,9 +80,9 @@ type ValkeyClusterReconciler struct {
 	ClientSet  *kubernetes.Clientset
 }
 
-// +kubebuilder:rbac:groups=cache.example.com,resources=valkeyclusters,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=cache.example.com,resources=valkeyclusters/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=cache.example.com,resources=valkeyclusters/finalizers,verbs=update
+// +kubebuilder:rbac:groups=cache.kurtmc.com,resources=valkeyclusters,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cache.kurtmc.com,resources=valkeyclusters/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=cache.kurtmc.com,resources=valkeyclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
