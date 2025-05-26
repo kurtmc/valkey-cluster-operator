@@ -4,7 +4,7 @@ permissions: write-all
 
 on:
   push:
-    branches: [kurt-branch]
+    branches: [master]
 
 jobs:
   publish:
