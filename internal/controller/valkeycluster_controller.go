@@ -1276,11 +1276,17 @@ func (r *ValkeyClusterReconciler) statefulSet(name string, size int32, valkeyClu
 								},
 							},
 							WorkingDir: "/data",
-							Command:    []string{"sh", "-c", `echo -e "port 6379\ncluster-enabled yes\ncluster-config-file nodes.conf\ncluster-node-timeout 5000\nappendonly yes\nprotected-mode no" > valkey.conf; exec valkey-server ./valkey.conf --cluster-announce-ip $POD_IP`},
+							Command:    []string{"sh", "-c", `exec valkey-server ./valkey.conf --cluster-announce-ip $POD_IP`},
 							VolumeMounts: []corev1.VolumeMount{
 								{
 									Name:      "valkey-data",
 									MountPath: "/data",
+								},
+								{
+									Name:      "valkey-configmap",
+									MountPath: "/data/valkey.conf",
+									SubPath:   "valkey.conf",
+									ReadOnly:  true,
 								},
 								{
 									Name:      "valkey-configmap",
@@ -1398,6 +1404,11 @@ func (r *ValkeyClusterReconciler) upsertConfigMap(ctx context.Context, valkeyClu
 		logger.Error(err, "failed to read pre_stop.sh")
 		return err
 	}
+	valkeyConf, err := scripts.ReadFile("scripts/valkey.conf")
+	if err != nil {
+		logger.Error(err, "failed to read valkey.conf")
+		return err
+	}
 	ls := labelsForValkeyCluster(valkeyCluster.Name)
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1407,6 +1418,7 @@ func (r *ValkeyClusterReconciler) upsertConfigMap(ctx context.Context, valkeyClu
 		},
 		Data: map[string]string{
 			"pre_stop.sh": string(preStop),
+			"valkey.conf": string(valkeyConf),
 		},
 	}
 	if err := controllerutil.SetControllerReference(valkeyCluster, cm, r.Scheme); err != nil {
