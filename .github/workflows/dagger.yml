@@ -20,7 +20,7 @@ jobs:
           # ACTIONS_RUNTIME_TOKEN, ACTIONS_RUNTIME_URL should be exposed
           env|sort
       - name: Call Dagger Function
-        uses: dagger/dagger-for-github@8.0.0
+        uses: rustic-beans/dagger-for-github@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
