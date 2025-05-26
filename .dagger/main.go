@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -596,6 +597,7 @@ func YamlToTf(ctx context.Context, yamlStr string) (string, error) {
 	builder := strings.Builder{}
 	parts := strings.Split(yamlStr, "---\n")
 
+	namespace := ""
 	for _, part := range parts {
 		tmpfile, err := os.CreateTemp("", "k2tf-*.yaml")
 		if err != nil {
@@ -617,6 +619,9 @@ func YamlToTf(ctx context.Context, yamlStr string) (string, error) {
 		var obj struct {
 			Kind       string `yaml:"kind"`
 			ApiVersion string `yaml:"apiVersion"`
+			Metadata   struct {
+				Name string `yaml:"name,omitempty"`
+			} `yaml:"metadata,omitempty"`
 		}
 		err = yaml.Unmarshal([]byte(part), &obj)
 		if err != nil {
@@ -640,8 +645,25 @@ func YamlToTf(ctx context.Context, yamlStr string) (string, error) {
 			}
 		}
 
+		if obj.Kind == "Namespace" {
+			namespace = obj.Metadata.Name
+		}
+
 		builder.WriteString(string(output))
 	}
 
-	return builder.String(), nil
+	result := builder.String()
+
+	if namespace != "" {
+		re := regexp.MustCompile(fmt.Sprintf(`namespace\s*=\s*"%s"`, namespace))
+		result = re.ReplaceAllString(result, fmt.Sprintf("namespace = kubernetes_namespace.%s.metadata[0].name", strings.ReplaceAll(namespace, "-", "_")))
+	}
+
+	return dag.Container().
+		From("hashicorp/terraform:1.12").
+		WithWorkdir("/workspace").
+		WithNewFile("/workspace/install.tf", result).
+		WithExec([]string{"terraform", "fmt"}).
+		File("/workspace/install.tf").
+		Contents(ctx)
 }
